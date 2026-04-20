@@ -8,6 +8,7 @@
 **/build/
 **/CMakeFiles/
 **/__pycache__/
+**/.venv/
 **/*.pyc
 **/*.log
 **/*.o
@@ -16,6 +17,14 @@
 **/*.engine
 
 datasets/drone_single_class/raw_sources/
+datasets/drone_single_class/images/train/
+datasets/drone_single_class/images/val/
+datasets/drone_single_class/images/test/
+datasets/drone_single_class/labels/train/
+datasets/drone_single_class/labels/val/
+datasets/drone_single_class/labels/test/
+datasets/drone_single_class/labels/*.cache
+training_runs/
 rk_yolo_live_rtsp/artifacts/
 rk_yolo_video/artifacts/
 unet/blur/

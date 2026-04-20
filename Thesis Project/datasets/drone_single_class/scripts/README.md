@@ -6,4 +6,18 @@ Planned scripts for the next steps:
 - label consistency checks
 - dataset summary statistics
 
-No source-specific import script has been created yet because we have not downloaded the first dataset bundle into `raw_sources/`.
+Current source-specific importer:
+- `import_kaggle_drone_object_detection.py`
+
+This importer is meant for the first bootstrap dataset:
+- Kaggle `Drone Object Detection` (`sshikamaru/drone-yolo-detection`)
+
+What it does:
+- scans a YOLO-style extracted source bundle
+- detects common train/val/test folder layouts
+- copies images into the standard dataset scaffold
+- normalizes all labels to class `0` (`drone`)
+- preserves negative samples by generating empty label files when needed
+- writes an import manifest to `manifests/`
+
+It does not modify files inside `raw_sources/`.

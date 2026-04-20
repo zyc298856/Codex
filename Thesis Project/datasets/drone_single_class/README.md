@@ -41,6 +41,18 @@ Recommended source priority:
 2. your own real deployment videos
 3. hard negative samples: birds, planes, kites, balloons, glare, distant black dots
 
+Current bootstrap choice:
+- primary source: Kaggle `Drone Object Detection` (`sshikamaru/drone-yolo-detection`)
+- why this source first:
+  - already YOLO-oriented
+  - single-class `drone` task fits the current plan
+  - includes negative samples
+  - better aligned with the "first make the training loop work" goal
+- backup sources kept for later:
+  - `Drone-detection-dataset`
+  - `Anti-UAV`
+  - `UETT4K-Anti-UAV`
+
 Next practical step:
-- place downloaded or extracted images/videos into `raw_sources/`
-- then we can write the import and split script for your exact source format
+- place the extracted Kaggle bundle under `raw_sources/public/kaggle_drone_object_detection/`
+- run the source import script to normalize it into the standard `images/` and `labels/` layout

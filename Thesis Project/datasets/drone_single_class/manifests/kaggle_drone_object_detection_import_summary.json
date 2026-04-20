@@ -1,0 +1,22 @@
+{
+  "source_root": "C:\\Users\\Tony\\Desktop\\eclipse-workspace-codex\\eclipse-workspace\\Thesis Project\\datasets\\drone_single_class\\raw_sources\\public\\kaggle_drone_object_detection",
+  "dataset_root": "C:\\Users\\Tony\\Desktop\\eclipse-workspace-codex\\eclipse-workspace\\Thesis Project\\datasets\\drone_single_class",
+  "source_tag": "kaggle_drone_object_detection",
+  "splits": {
+    "train": {
+      "images": 2853,
+      "labeled_images": 2057,
+      "negative_images": 796
+    },
+    "val": {
+      "images": 760,
+      "labeled_images": 536,
+      "negative_images": 224
+    },
+    "test": {
+      "images": 401,
+      "labeled_images": 272,
+      "negative_images": 129
+    }
+  }
+}

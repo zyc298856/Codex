@@ -1,4 +1,4 @@
-path: C:/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/datasets/drone_single_class
+path: .
 train: images/train
 val: images/val
 test: images/test
