@@ -1,0 +1,18 @@
+{
+  "source_root": "C:\\Users\\Tony\\Desktop\\eclipse-workspace-codex\\eclipse-workspace\\datasets\\drone_single_class\\raw_sources\\public\\Drone-detection-dataset\\Data",
+  "counts_by_modality": {
+    "IR": 730,
+    "V": 570
+  },
+  "counts_by_label": {
+    "AIRPLANE": 266,
+    "BIRD": 260,
+    "DRONE": 542,
+    "HELICOPTER": 232
+  },
+  "drone_pair_count": 271,
+  "notes": [
+    "This source uses MATLAB groundTruth objects stored in *_LABELS.mat files.",
+    "Direct YOLO conversion will likely require MATLAB export or a source-specific parser."
+  ]
+}

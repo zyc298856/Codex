@@ -1,0 +1,9 @@
+{
+  "name": "rk_yolo_video tuned default on /home/ubuntu/test.mp4",
+  "model": "../../yolov10n.rknn",
+  "score_threshold": 0.30,
+  "nms_threshold": 0.45,
+  "expected_frames": 364,
+  "expected_frames_with_detections": 341,
+  "expected_total_detections": 706
+}

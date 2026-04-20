@@ -1,0 +1,16 @@
+
+1.网页连接命令：http://主机地址:8080
+2.tcp 连接主机host(192.168......, 端口:9736)
+ 通信命令如下：
+ 获取参数：
+ {"parameter":{"action":"GET","id":0}}
+ 获取状态：
+ {"status":{"action":"GET","id":0}}
+ 设置参数：
+ {"parameter":{"action":"POST","id":0,"filterType":1,"unet":1,"objectShow":1,"objectDetect":1,"alpha":0.100000,"fps":30}}
+
+3.终端播放软件，解压player.zip
+  命令：rtspdemo url
+  D:\rtspdemo>rtspdemo rtsp://192.168.110.109/video0
+4.更换模型：
+  关闭encoder,在encoder下面，用新的模型替换对应的cnn.engine和yolov10.engine模型，重开encoder

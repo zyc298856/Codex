@@ -1,0 +1,7 @@
+path: C:/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/datasets/drone_single_class
+train: images/train
+val: images/val
+test: images/test
+
+names:
+  0: drone

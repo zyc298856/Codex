@@ -1,0 +1,1 @@
+/usr/src/tensorrt/bin/trtexec --onnx=model.onnx --saveEngine=model_trt.engine --minShapes=input:1x1x512x640 --optShapes=input:1x1x512x640 --maxShapes=input:1x1x512x640 --workspace=2048 --best
