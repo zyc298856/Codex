@@ -10,6 +10,8 @@ Standalone RK3588 live demo:
 
 This tool is intentionally independent from the existing Jetson encoder path.
 
+For the new single-class drone detector trained in this workspace, do not start here first. Validate the drone RKNN model in `rk_yolo_video` before moving it into the live RTSP path. That reduces the number of moving parts during the first board-side bring-up.
+
 ## Build On RK3588
 
 ```bash
@@ -72,3 +74,4 @@ rtsp://192.168.10.186:8554/yolo
 - You can enable experimental multi-context NPU inference with `RK_YOLO_INFER_WORKERS=2`, but it is only activated when `detect_every_n=1`.
 - The multi-context path is aimed at throughput experiments and may increase end-to-end latency if you try to use it as a direct replacement for the current real-time viewing setup.
 - Runtime logs print `stream_fps`, `npu_fps`, `roi_fps`, and `work_ms` so you can compare full-frame inference, ROI inference, and tracking cost.
+- If you later move the new drone-specific model into this live path, start from the offline-validated threshold pair first; the current recommendation is `score=0.35`, `nms=0.45`.

@@ -26,6 +26,20 @@ That adapter is not wired into the current runtime path yet. It exists so future
 
 The default model is the WSL-regenerated `yolov10n.rknn` in the workspace root. The previous model is kept as `../yolov10n.pre_wsl_backup.rknn` in case you want to compare.
 
+For the newer single-class drone detector trained in this workspace, the first recommended board-side validation path is also `rk_yolo_video`, not the live RTSP tool. That keeps the validation surface small before adding camera, tracking, and streaming variables.
+
+Recommended first-pass settings for the drone-specific model:
+
+- model: `../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn`
+- score: `0.35`
+- nms: `0.45`
+
+That recommendation comes from the offline threshold sweep documented in:
+
+```text
+docs/superpowers/specs/2026-04-21-drone-model-error-analysis.md
+```
+
 ## Build On RK3588
 
 Install dependencies first:
@@ -76,6 +90,12 @@ Example:
 ./rk_yolo_video input.mp4 output.mp4 ../../yolov10n.rknn 0.30 0.45 output.csv output.roi.jsonl
 ```
 
+Drone-model example:
+
+```bash
+./rk_yolo_video input.mp4 output.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 output.csv output.roi.jsonl
+```
+
 The CSV file records one line per detection:
 
 ```text
@@ -108,6 +128,7 @@ This is the guardrail for future migration work: keep the current `rk_yolo_video
 
 - The code assumes the RKNN output is a YOLO-style raw head such as `1x84x8400`.
 - The current default threshold pair is `score=0.30` and `nms=0.45`, chosen from a quick on-board sweep against `test.mp4`.
+- The new drone-specific model should start from `score=0.35` and `nms=0.45` during its first board-side validation pass.
 - The ROI JSONL file is meant to reduce the gap between this standalone validator and the legacy encoder's object output path.
 - If the shipped `yolov10n.rknn` produces obviously wrong detections, regenerate it from `../yolov10n.onnx` and retry.
 - This phase uses OpenCV video I/O for simplicity. MPP and RGA are intentionally deferred until functional validation succeeds.
