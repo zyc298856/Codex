@@ -1,0 +1,44 @@
+{
+  "dataset_root": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class",
+  "remove_invalid": true,
+  "summary": {
+    "train": {
+      "images_scanned": 2853,
+      "valid_pairs": 2850,
+      "invalid_pairs": 3,
+      "negative_images": 795
+    },
+    "val": {
+      "images_scanned": 760,
+      "valid_pairs": 760,
+      "invalid_pairs": 0,
+      "negative_images": 224
+    },
+    "test": {
+      "images_scanned": 401,
+      "valid_pairs": 401,
+      "invalid_pairs": 0,
+      "negative_images": 129
+    }
+  },
+  "issues": [
+    {
+      "split": "train",
+      "image": "images/train/kaggle_drone_object_detection_train_video15_487.jpeg",
+      "label": "labels/train/kaggle_drone_object_detection_train_video15_487.txt",
+      "reason": "invalid_image:OSError:image file is truncated (5 bytes not processed)"
+    },
+    {
+      "split": "train",
+      "image": "images/train/kaggle_drone_object_detection_train_video17_295.jpeg",
+      "label": "labels/train/kaggle_drone_object_detection_train_video17_295.txt",
+      "reason": "invalid_image:UnidentifiedImageError:cannot identify image file '/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/images/train/kaggle_drone_object_detection_train_video17_295.jpeg'"
+    },
+    {
+      "split": "train",
+      "image": "images/train/kaggle_drone_object_detection_train_video19_1900.jpeg",
+      "label": "labels/train/kaggle_drone_object_detection_train_video19_1900.txt",
+      "reason": "invalid_image:UnidentifiedImageError:cannot identify image file '/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/images/train/kaggle_drone_object_detection_train_video19_1900.jpeg'"
+    }
+  ]
+}

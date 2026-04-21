@@ -8,6 +8,7 @@ Planned scripts for the next steps:
 
 Current source-specific importer:
 - `import_kaggle_drone_object_detection.py`
+- `validate_yolo_dataset.py`
 
 This importer is meant for the first bootstrap dataset:
 - Kaggle `Drone Object Detection` (`sshikamaru/drone-yolo-detection`)
@@ -21,3 +22,13 @@ What it does:
 - writes an import manifest to `manifests/`
 
 It does not modify files inside `raw_sources/`.
+
+Dataset validation helper:
+- `validate_yolo_dataset.py`
+
+What it does:
+- scans `images/train|val|test` and matching labels
+- verifies images can be decoded
+- checks YOLO label formatting for the single-class `drone` setup
+- writes a validation report into `manifests/`
+- can optionally remove invalid derived image/label pairs

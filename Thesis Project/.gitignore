@@ -25,6 +25,7 @@ datasets/drone_single_class/labels/val/
 datasets/drone_single_class/labels/test/
 datasets/drone_single_class/labels/*.cache
 training_runs/
+training/drone_yolov10/yolo26n.pt
 rk_yolo_live_rtsp/artifacts/
 rk_yolo_video/artifacts/
 unet/blur/

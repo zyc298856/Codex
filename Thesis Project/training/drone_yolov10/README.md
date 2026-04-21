@@ -28,6 +28,12 @@ If GPU is not available, use:
 python train_drone_yolov10.py --model ../../yolov10n.pt --epochs 50 --imgsz 640 --batch 8 --device cpu
 ```
 
+Prediction analysis:
+
+```bash
+python analyze_drone_predictions.py --model ../../training_runs/drone_gpu_50e/weights/best.pt --split test --device cpu
+```
+
 Notes:
 - this script does not touch the current RK3588 runtime path
 - dataset images and labels are intentionally kept out of Git tracking
