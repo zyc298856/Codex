@@ -9,6 +9,13 @@
 #include <limits>
 #include <numeric>
 #include <sstream>
+#include <string>
+
+#ifdef HAVE_RGA
+#include <cstddef>
+#include <rga/im2d.h>
+#include <rga/rga.h>
+#endif
 
 namespace {
 
@@ -97,6 +104,17 @@ bool ZeroCopyInputEnabled() {
   return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
 }
 
+bool RgaPreprocessRequested() {
+  const char* env_value = std::getenv("RK_YOLO_PREPROCESS");
+  if (env_value != nullptr) {
+    const std::string value(env_value);
+    return value == "rga" || value == "RGA";
+  }
+
+  env_value = std::getenv("RK_YOLO_USE_RGA");
+  return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
+}
+
 bool LooksLikeFeatureAxis(int dim) {
   // Current deployments use compact per-box feature layouts such as:
   // - 84  : generic COCO-style raw head
@@ -178,6 +196,7 @@ YoloRknnDetector::YoloRknnDetector()
       model_channels_(0),
       class_count_(0),
       zero_copy_input_enabled_(false),
+      rga_preprocess_enabled_(false),
       zero_copy_input_mem_(nullptr),
       zero_copy_input_attr_{},
       loaded_(false) {}
@@ -246,6 +265,19 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
   class_count_ = output_layout.direct_boxes ? 0 : std::max(0, output_layout.feature_count - 4);
   std::cout << "resolved model classes: " << class_count_ << std::endl;
 
+  rga_preprocess_enabled_ = RgaPreprocessRequested();
+#ifdef HAVE_RGA
+  std::cout << "preprocess=" << (rga_preprocess_enabled_ ? "rga_resize" : "opencv")
+            << std::endl;
+#else
+  if (rga_preprocess_enabled_) {
+    std::cout << "preprocess=rga_requested_but_unavailable_fallback_opencv" << std::endl;
+    rga_preprocess_enabled_ = false;
+  } else {
+    std::cout << "preprocess=opencv" << std::endl;
+  }
+#endif
+
   if (ZeroCopyInputEnabled()) {
     zero_copy_input_enabled_ = InitZeroCopyInput();
     std::cout << "zero_copy_input=" << (zero_copy_input_enabled_ ? "on" : "failed_fallback")
@@ -275,6 +307,7 @@ void YoloRknnDetector::Release() {
   model_channels_ = 0;
   class_count_ = 0;
   zero_copy_input_enabled_ = false;
+  rga_preprocess_enabled_ = false;
   zero_copy_input_attr_ = {};
   loaded_ = false;
 }
@@ -305,7 +338,13 @@ bool YoloRknnDetector::PrepareInput(const cv::Mat& frame, std::vector<unsigned c
   cv::cvtColor(frame, rgb, cv::COLOR_BGR2RGB);
 
   cv::Mat resized;
-  cv::resize(rgb, resized, cv::Size(resized_w, resized_h), 0.0, 0.0, cv::INTER_LINEAR);
+  bool resized_with_rga = false;
+  if (rga_preprocess_enabled_) {
+    resized_with_rga = ResizeRgbWithRga(rgb, &resized, resized_w, resized_h);
+  }
+  if (!resized_with_rga) {
+    cv::resize(rgb, resized, cv::Size(resized_w, resized_h), 0.0, 0.0, cv::INTER_LINEAR);
+  }
 
   cv::Mat padded;
   cv::copyMakeBorder(resized, padded, pad_top, pad_bottom, pad_left, pad_right, cv::BORDER_CONSTANT,
@@ -313,6 +352,58 @@ bool YoloRknnDetector::PrepareInput(const cv::Mat& frame, std::vector<unsigned c
 
   input_u8->assign(padded.data, padded.data + padded.total() * padded.elemSize());
   return true;
+}
+
+bool YoloRknnDetector::ResizeRgbWithRga(const cv::Mat& rgb, cv::Mat* resized, int width,
+                                        int height) const {
+#ifndef HAVE_RGA
+  (void)rgb;
+  (void)resized;
+  (void)width;
+  (void)height;
+  return false;
+#else
+  static bool warned = false;
+  if (rgb.empty() || resized == nullptr || width <= 0 || height <= 0 || rgb.type() != CV_8UC3) {
+    if (!warned) {
+      std::cerr << "RGA resize skipped: invalid RGB input" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  const cv::Mat rgb_contiguous = rgb.isContinuous() ? rgb : rgb.clone();
+  resized->create(height, width, CV_8UC3);
+  if (!resized->isContinuous()) {
+    *resized = resized->clone();
+  }
+
+  rga_buffer_t src = wrapbuffer_virtualaddr(const_cast<unsigned char*>(rgb_contiguous.data),
+                                            rgb_contiguous.cols, rgb_contiguous.rows,
+                                            RK_FORMAT_RGB_888);
+  rga_buffer_t dst = wrapbuffer_virtualaddr(resized->data, width, height, RK_FORMAT_RGB_888);
+
+  IM_STATUS status = imcheck(src, dst, {}, {});
+  if (status != IM_STATUS_NOERROR) {
+    if (!warned) {
+      std::cerr << "RGA imcheck failed: " << imStrError(status)
+                << "; fallback to OpenCV resize" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  status = imresize(src, dst);
+  if (status != IM_STATUS_SUCCESS) {
+    if (!warned) {
+      std::cerr << "RGA imresize failed: " << imStrError(status)
+                << "; fallback to OpenCV resize" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+  return true;
+#endif
 }
 
 bool YoloRknnDetector::InitZeroCopyInput() {

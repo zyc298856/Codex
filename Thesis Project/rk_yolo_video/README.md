@@ -120,6 +120,28 @@ RK_YOLO_PROFILE=1 RK_YOLO_ZERO_COPY_INPUT=1 ./rk_yolo_video input.mp4 output_zer
 
 If zero-copy setup fails, the tool prints the failure reason and falls back to the normal input path. Keep `RK_YOLO_ZERO_COPY_INPUT=0` for stable demonstrations unless a board-side comparison shows a benefit.
 
+## Optional RGA Preprocess Experiment
+
+The stable default preprocessing path remains OpenCV. For board-side hardware-preprocess experiments,
+`rk_yolo_video` can optionally use RK3588 RGA for the resize step while keeping color conversion,
+letterbox padding, RKNN input upload, and post-processing unchanged.
+
+Enable the experimental RGA resize path:
+
+```bash
+RK_YOLO_PROFILE=1 RK_YOLO_PREPROCESS=rga ./rk_yolo_video input.mp4 output_rga.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 rga.csv rga.roi.jsonl
+```
+
+Compare against the stable OpenCV path:
+
+```bash
+RK_YOLO_PROFILE=1 RK_YOLO_PREPROCESS=opencv ./rk_yolo_video input.mp4 output_opencv.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 opencv.csv opencv.roi.jsonl
+```
+
+The RGA path requires `librga-dev` on the board. If RGA is not available, or if the resize call fails,
+the program prints a warning and falls back to OpenCV resize. This keeps demonstrations and existing
+validation runs compatible with the known-good baseline.
+
 The CSV file records one line per detection:
 
 ```text
@@ -155,4 +177,4 @@ This is the guardrail for future migration work: keep the current `rk_yolo_video
 - The new drone-specific model should start from `score=0.35` and `nms=0.45` during its first board-side validation pass.
 - The ROI JSONL file is meant to reduce the gap between this standalone validator and the legacy encoder's object output path.
 - If the shipped `yolov10n.rknn` produces obviously wrong detections, regenerate it from `../yolov10n.onnx` and retry.
-- This phase uses OpenCV video I/O for simplicity. MPP and RGA are intentionally deferred until functional validation succeeds.
+- This phase uses OpenCV video I/O for simplicity. RGA resize is available as an optional experiment, while MPP/decode-side zero-copy remains future work.

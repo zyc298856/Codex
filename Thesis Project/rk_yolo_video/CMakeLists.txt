@@ -6,6 +6,11 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenCV REQUIRED)
+find_package(PkgConfig QUIET)
+
+if(PkgConfig_FOUND)
+  pkg_check_modules(RGA QUIET librga)
+endif()
 
 find_path(
   RKNN_INCLUDE_DIR
@@ -58,3 +63,13 @@ target_link_libraries(
     ${OpenCV_LIBS}
     ${RKNN_LIBRARY}
 )
+
+if(RGA_FOUND)
+  target_compile_definitions(rk_yolo_video PRIVATE HAVE_RGA=1)
+  target_include_directories(rk_yolo_video PRIVATE ${RGA_INCLUDE_DIRS})
+  target_link_directories(rk_yolo_video PRIVATE ${RGA_LIBRARY_DIRS})
+  target_link_libraries(rk_yolo_video PRIVATE ${RGA_LIBRARIES})
+  message(STATUS "librga found: optional RK_YOLO_PREPROCESS=rga path enabled")
+else()
+  message(WARNING "librga not found: RK_YOLO_PREPROCESS=rga will fall back to OpenCV")
+endif()
