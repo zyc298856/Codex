@@ -5,6 +5,11 @@
 #include <gst/rtsp-server/rtsp-server.h>
 #include <opencv2/opencv.hpp>
 
+#ifdef HAVE_RGA
+#include <rga/im2d.h>
+#include <rga/rga.h>
+#endif
+
 #include <atomic>
 #include <algorithm>
 #include <chrono>
@@ -188,6 +193,8 @@ struct PipelineStats {
   std::atomic<std::uint64_t> reused_frames{0};
   std::atomic<std::uint64_t> roi_crop_runs{0};
   std::atomic<std::uint64_t> dispatch_dropped_frames{0};
+  std::atomic<std::uint64_t> rga_frame_resize_runs{0};
+  std::atomic<std::uint64_t> opencv_frame_resize_runs{0};
 };
 
 struct RoiConfig {
@@ -308,6 +315,14 @@ bool LoadProfileLogEnabled() {
   return ParseEnvBool("RK_YOLO_PROFILE", false);
 }
 
+bool LoadRgaFrameResizeEnabled() {
+  const char* value = std::getenv("RK_YOLO_RGA_FRAME_RESIZE");
+  if (value != nullptr && value[0] != '\0') {
+    return value[0] != '0';
+  }
+  return ParseEnvBool("RK_YOLO_RGA_PUBLISH_RESIZE", false);
+}
+
 BoxSmootherConfig LoadBoxSmootherConfig() {
   BoxSmootherConfig config;
   config.enabled = ParseEnvBool("RK_YOLO_BOX_SMOOTH", true);
@@ -362,6 +377,50 @@ const char* TrackModeName(TrackMode mode) {
     default:
       return "motion";
   }
+}
+
+bool ResizeBgrFrameWithRga(const cv::Mat& bgr, cv::Mat* resized_bgr, int width, int height) {
+#ifndef HAVE_RGA
+  (void)bgr;
+  (void)resized_bgr;
+  (void)width;
+  (void)height;
+  return false;
+#else
+  static bool warned = false;
+  if (bgr.empty() || bgr.type() != CV_8UC3 || resized_bgr == nullptr || width <= 0 || height <= 0) {
+    return false;
+  }
+
+  cv::Mat bgr_contiguous = bgr.isContinuous() ? bgr : bgr.clone();
+  resized_bgr->create(height, width, CV_8UC3);
+
+  rga_buffer_t src = wrapbuffer_virtualaddr(const_cast<unsigned char*>(bgr_contiguous.data),
+                                            bgr_contiguous.cols, bgr_contiguous.rows,
+                                            RK_FORMAT_BGR_888);
+  rga_buffer_t dst = wrapbuffer_virtualaddr(resized_bgr->data, width, height, RK_FORMAT_BGR_888);
+
+  IM_STATUS status = imcheck(src, dst, {}, {});
+  if (status != IM_STATUS_NOERROR) {
+    if (!warned) {
+      std::cerr << "RGA frame resize imcheck failed: " << imStrError(status)
+                << "; fallback to OpenCV resize" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  status = imresize(src, dst);
+  if (status != IM_STATUS_SUCCESS) {
+    if (!warned) {
+      std::cerr << "RGA frame resize failed: " << imStrError(status)
+                << "; fallback to OpenCV resize" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+  return true;
+#endif
 }
 
 std::string BuildLabel(const Detection& det) {
@@ -1071,7 +1130,8 @@ void PrintUsage(const char* argv0) {
             << std::endl;
 }
 
-void CaptureLoop(cv::VideoCapture* cap, int width, int height, int fps, RtspPublisher* publisher,
+void CaptureLoop(cv::VideoCapture* cap, int width, int height, int fps, bool use_rga_frame_resize,
+                 RtspPublisher* publisher,
                  const InputSourceConfig& source_config, BoundedQueue<FramePacket>* capture_queue,
                  PipelineStats* stats) {
   std::uint64_t frame_index = 0;
@@ -1115,7 +1175,16 @@ void CaptureLoop(cv::VideoCapture* cap, int width, int height, int fps, RtspPubl
     }
 
     if (frame.cols != width || frame.rows != height) {
-      cv::resize(frame, frame, cv::Size(width, height));
+      cv::Mat resized_frame;
+      const bool resized_with_rga =
+          use_rga_frame_resize && ResizeBgrFrameWithRga(frame, &resized_frame, width, height);
+      if (resized_with_rga) {
+        frame = std::move(resized_frame);
+        ++stats->rga_frame_resize_runs;
+      } else {
+        cv::resize(frame, frame, cv::Size(width, height));
+        ++stats->opencv_frame_resize_runs;
+      }
     }
 
     FramePacket packet;
@@ -1436,6 +1505,8 @@ void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_qu
       const std::uint64_t total_reused_frames = stats->reused_frames.load();
       const std::uint64_t total_roi_crop_runs = stats->roi_crop_runs.load();
       const std::uint64_t total_dispatch_dropped = stats->dispatch_dropped_frames.load();
+      const std::uint64_t total_rga_frame_resize = stats->rga_frame_resize_runs.load();
+      const std::uint64_t total_opencv_frame_resize = stats->opencv_frame_resize_runs.load();
       const double stream_fps = (wall_seconds > 0.0) ? (interval_frames / wall_seconds) : 0.0;
       const double npu_fps =
           (wall_seconds > 0.0)
@@ -1454,6 +1525,8 @@ void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_qu
                 << " npu_infer_runs=" << total_npu_inference_runs
                 << " reused_frames=" << total_reused_frames
                 << " roi_crop_runs=" << total_roi_crop_runs
+                << " rga_frame_resize_runs=" << total_rga_frame_resize
+                << " opencv_frame_resize_runs=" << total_opencv_frame_resize
                 << " dispatch_dropped=" << total_dispatch_dropped
                 << " detections=" << packet.detections
                 << " alarm=" << (packet.alarm_active ? "on" : "off")
@@ -1518,6 +1591,7 @@ int main(int argc, char** argv) {
   const BoxSmootherConfig smoother_config = LoadBoxSmootherConfig();
   const CameraTuneConfig camera_tune_config = LoadCameraTuneConfig();
   const AlarmConfig alarm_config = LoadAlarmConfig();
+  const bool use_rga_frame_resize = LoadRgaFrameResizeEnabled();
   const int infer_workers = LoadInferWorkers();
   const bool use_multi_worker_mode = infer_workers > 1 && detect_every_n == 1;
 
@@ -1572,6 +1646,7 @@ int main(int argc, char** argv) {
             << " min_iou=" << smoother_config.min_iou << std::endl;
   std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
             << " hold_frames=" << alarm_config.hold_frames << std::endl;
+  std::cout << "rga_frame_resize=" << (use_rga_frame_resize ? "on" : "off") << std::endl;
   std::cout << "infer_workers=" << infer_workers << std::endl;
   std::cout << "dynamic_roi=" << (roi_config.enabled ? "on" : "off")
             << " margin=" << roi_config.margin_ratio
@@ -1590,8 +1665,8 @@ int main(int argc, char** argv) {
   PipelineStats stats;
   BoundedQueue<FramePacket> capture_queue(kCaptureQueueCapacity);
   BoundedQueue<FramePacket> publish_queue(kPublishQueueCapacity);
-  std::thread capture_thread(CaptureLoop, &cap, width, height, fps, &publisher, source_config,
-                             &capture_queue, &stats);
+  std::thread capture_thread(CaptureLoop, &cap, width, height, fps, use_rga_frame_resize,
+                             &publisher, source_config, &capture_queue, &stats);
   std::thread publish_thread(PublishLoop, &publisher, &capture_queue, &publish_queue, &stats);
 
   std::thread infer_thread;
