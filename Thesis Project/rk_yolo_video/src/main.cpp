@@ -3,6 +3,7 @@
 
 #include <opencv2/opencv.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
@@ -31,16 +32,52 @@ const char* const kCocoClassNames[80] = {
 
 constexpr float kDefaultScoreThreshold = 0.30f;
 constexpr float kDefaultNmsThreshold = 0.45f;
+constexpr int kDefaultAlarmHoldFrames = 5;
+
+struct AlarmConfig {
+  bool overlay_enabled = true;
+  int hold_frames = kDefaultAlarmHoldFrames;
+};
+
+struct AlarmState {
+  bool active = false;
+  bool previous_active = false;
+  int missed_frames = 0;
+  int event_count = 0;
+};
 
 bool EnvFlagEnabled(const char* name) {
   const char* value = std::getenv(name);
   return value != nullptr && value[0] != '\0' && value[0] != '0';
 }
 
+bool ParseEnvBool(const char* name, bool default_value) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  return value[0] != '0';
+}
+
+int ParseEnvInt(const char* name, int default_value, int min_value, int max_value) {
+  const char* value = std::getenv(name);
+  if (value == nullptr || value[0] == '\0') {
+    return default_value;
+  }
+  return std::clamp(std::atoi(value), min_value, max_value);
+}
+
+AlarmConfig LoadAlarmConfig() {
+  AlarmConfig config;
+  config.overlay_enabled = ParseEnvBool("RK_YOLO_ALARM_OVERLAY", true);
+  config.hold_frames = ParseEnvInt("RK_YOLO_ALARM_HOLD_FRAMES", kDefaultAlarmHoldFrames, 0, 300);
+  return config;
+}
+
 void PrintUsage(const char* argv0) {
   std::cout << "Usage: " << argv0
             << " <input_video> <output_video> [model_path=<auto>] [score_thresh=0.30] "
-               "[nms_thresh=0.45] [detections_csv] [roi_jsonl]"
+               "[nms_thresh=0.45] [detections_csv] [roi_jsonl] [alarm_csv]"
             << std::endl;
 }
 
@@ -59,6 +96,54 @@ std::string BuildLabel(const Detection& det, int model_class_count) {
   oss << ClassName(det.class_id, model_class_count) << " " << std::fixed << std::setprecision(2)
       << det.score;
   return oss.str();
+}
+
+float MaxScore(const std::vector<Detection>& detections) {
+  float max_score = 0.0f;
+  for (const Detection& det : detections) {
+    max_score = std::max(max_score, det.score);
+  }
+  return max_score;
+}
+
+void UpdateAlarmState(const std::vector<Detection>& detections, const AlarmConfig& config,
+                      AlarmState* state) {
+  state->previous_active = state->active;
+  if (!detections.empty()) {
+    state->active = true;
+    state->missed_frames = 0;
+    return;
+  }
+
+  if (state->active && state->missed_frames < config.hold_frames) {
+    ++state->missed_frames;
+    return;
+  }
+
+  state->active = false;
+  state->missed_frames = 0;
+}
+
+void DrawAlarmOverlay(cv::Mat* frame, const AlarmState& state,
+                      const std::vector<Detection>& detections) {
+  if (frame == nullptr || frame->empty()) {
+    return;
+  }
+
+  const int bar_h = std::max(34, frame->rows / 14);
+  const cv::Scalar bg = state.active ? cv::Scalar(0, 0, 220) : cv::Scalar(40, 120, 40);
+  cv::rectangle(*frame, cv::Rect(0, 0, frame->cols, bar_h), bg, cv::FILLED);
+
+  std::ostringstream oss;
+  if (state.active) {
+    oss << "UAV ALERT | targets=" << detections.size() << " | max_score=" << std::fixed
+        << std::setprecision(2) << MaxScore(detections);
+  } else {
+    oss << "NORMAL | no target";
+  }
+
+  cv::putText(*frame, oss.str(), cv::Point(12, std::min(bar_h - 9, 30)),
+              cv::FONT_HERSHEY_SIMPLEX, 0.72, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
 }
 
 std::string ResolveModelPath(int argc, char** argv) {
@@ -116,6 +201,17 @@ void WriteDetectionRows(std::ofstream* csv_file, int frame_index,
   }
 }
 
+void WriteAlarmEvent(std::ofstream* alarm_file, int frame_index, const AlarmState& state,
+                     const std::vector<Detection>& detections) {
+  if (alarm_file == nullptr || !alarm_file->is_open() || state.active == state.previous_active) {
+    return;
+  }
+
+  *alarm_file << frame_index << "," << (state.active ? "alarm_on" : "alarm_off") << ","
+              << (state.active ? 1 : 0) << "," << detections.size() << "," << std::fixed
+              << std::setprecision(4) << MaxScore(detections) << "\n";
+}
+
 void PrintProfileHeader() {
   std::cout
       << "profile_csv_header,frame,input_mode,prepare_ms,input_set_or_update_ms,rknn_run_ms,"
@@ -152,7 +248,9 @@ int main(int argc, char** argv) {
   const std::string detections_csv =
       (argc >= 7) ? argv[6] : (output_video + ".detections.csv");
   const std::string roi_jsonl = (argc >= 8) ? argv[7] : (output_video + ".roi.jsonl");
+  const std::string alarm_csv = (argc >= 9) ? argv[8] : (output_video + ".alarm_events.csv");
   const bool profile_enabled = EnvFlagEnabled("RK_YOLO_PROFILE");
+  const AlarmConfig alarm_config = LoadAlarmConfig();
 
   YoloRknnDetector detector;
   if (!detector.Load(model_path)) {
@@ -194,11 +292,21 @@ int main(int argc, char** argv) {
     return 6;
   }
 
+  std::ofstream alarm_file(alarm_csv, std::ios::out | std::ios::trunc);
+  if (!alarm_file.is_open()) {
+    std::cerr << "failed to open alarm csv: " << alarm_csv << std::endl;
+    return 7;
+  }
+  alarm_file << "frame_index,event,active,detections,max_score\n";
+
   std::cout << "processing video " << input_video << " -> " << output_video << std::endl;
   std::cout << "model path=" << model_path << std::endl;
   std::cout << "score threshold=" << score_threshold << ", nms threshold=" << nms_threshold << std::endl;
   std::cout << "detections csv=" << detections_csv << std::endl;
   std::cout << "roi jsonl=" << roi_jsonl << std::endl;
+  std::cout << "alarm csv=" << alarm_csv << std::endl;
+  std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
+            << " hold_frames=" << alarm_config.hold_frames << std::endl;
   std::cout << "profile=" << (profile_enabled ? "on" : "off")
             << ", zero_copy_input=" << (detector.zero_copy_input_enabled() ? "on" : "off")
             << std::endl;
@@ -210,6 +318,7 @@ int main(int argc, char** argv) {
   int detected_frames = 0;
   double total_ms = 0.0;
   int total_detections = 0;
+  AlarmState alarm_state;
 
   cv::Mat frame;
   while (cap.read(frame)) {
@@ -230,6 +339,17 @@ int main(int argc, char** argv) {
 
     const auto render_start = std::chrono::steady_clock::now();
     DrawDetections(&frame, detections, model_class_count);
+    UpdateAlarmState(detections, alarm_config, &alarm_state);
+    if (alarm_config.overlay_enabled) {
+      DrawAlarmOverlay(&frame, alarm_state, detections);
+    }
+    if (alarm_state.active != alarm_state.previous_active) {
+      ++alarm_state.event_count;
+      std::cout << "alarm_event frame=" << (frame_index + 1)
+                << " state=" << (alarm_state.active ? "on" : "off")
+                << " detections=" << detections.size() << std::endl;
+    }
+    WriteAlarmEvent(&alarm_file, frame_index + 1, alarm_state, detections);
     WriteDetectionRows(&csv_file, frame_index + 1, detections, model_class_count);
     roi_file << BuildLegacyRoiJson(detections) << "\n";
     writer.write(frame);
@@ -249,9 +369,10 @@ int main(int argc, char** argv) {
   const double avg_ms = (frame_index > 0) ? (total_ms / frame_index) : 0.0;
   std::cout << "done. frames=" << frame_index << ", frames_with_detections=" << detected_frames
             << ", total_detections=" << total_detections
+            << ", alarm_events=" << alarm_state.event_count
             << ", avg_infer_ms=" << std::fixed << std::setprecision(2) << avg_ms << std::endl;
   std::cout << "results saved to " << output_video << ", " << detections_csv
-            << " and " << roi_jsonl << std::endl;
+            << ", " << roi_jsonl << " and " << alarm_csv << std::endl;
 
   return 0;
 }

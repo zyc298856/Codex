@@ -79,7 +79,7 @@ python3 tools/convert_yolov10_to_rknn.py ../yolov10n.onnx --target rk3588 --dtyp
 ## Run
 
 ```bash
-./rk_yolo_video <input_video> <output_video> [model_path] [score_thresh] [nms_thresh] [detections_csv] [roi_jsonl]
+./rk_yolo_video <input_video> <output_video> [model_path] [score_thresh] [nms_thresh] [detections_csv] [roi_jsonl] [alarm_csv]
 ```
 
 If `model_path` is omitted, the binary will try common local paths such as `../../yolov10n.rknn`.
@@ -87,13 +87,31 @@ If `model_path` is omitted, the binary will try common local paths such as `../.
 Example:
 
 ```bash
-./rk_yolo_video input.mp4 output.mp4 ../../yolov10n.rknn 0.30 0.45 output.csv output.roi.jsonl
+./rk_yolo_video input.mp4 output.mp4 ../../yolov10n.rknn 0.30 0.45 output.csv output.roi.jsonl output.alarm.csv
 ```
 
 Drone-model example:
 
 ```bash
-./rk_yolo_video input.mp4 output.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 output.csv output.roi.jsonl
+./rk_yolo_video input.mp4 output.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 output.csv output.roi.jsonl output.alarm.csv
+```
+
+## Software Alarm Overlay
+
+`rk_yolo_video` includes a software alarm path for demonstrations without external relays or buzzers.
+When at least one target is displayed, the output video shows a red `UAV ALERT` banner. When no target
+is present, it shows a green `NORMAL` banner. Alarm transitions are also written to an alarm CSV file.
+
+Environment variables:
+
+- `RK_YOLO_ALARM_OVERLAY=1` enables the visual banner and is on by default.
+- `RK_YOLO_ALARM_OVERLAY=0` disables only the banner while keeping detection output unchanged.
+- `RK_YOLO_ALARM_HOLD_FRAMES=5` keeps the alarm active for a few missed frames to avoid flicker.
+
+Alarm CSV format:
+
+```text
+frame_index,event,active,detections,max_score
 ```
 
 ## Profiling And Zero-Copy Experiments

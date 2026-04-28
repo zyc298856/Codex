@@ -53,10 +53,12 @@ constexpr int kDefaultDetectEveryN = 1;
 constexpr float kDefaultRoiMarginRatio = 0.35f;
 constexpr float kDefaultRoiMinCoverageRatio = 0.55f;
 constexpr int kDefaultRoiFullFrameRefresh = 5;
+constexpr int kDefaultAlarmHoldFrames = 5;
 constexpr std::size_t kCaptureQueueCapacity = 2;
 constexpr std::size_t kPublishQueueCapacity = 2;
 
 std::atomic<bool> g_stop{false};
+std::atomic<bool> g_single_class_drone_labels{false};
 
 void HandleSignal(int) { g_stop.store(true); }
 
@@ -164,7 +166,16 @@ struct FramePacket {
   std::chrono::steady_clock::time_point captured_at;
   std::chrono::steady_clock::time_point inferred_at;
   double work_ms = 0.0;
+  double infer_prepare_ms = 0.0;
+  double infer_inputs_set_ms = 0.0;
+  double infer_run_ms = 0.0;
+  double infer_outputs_get_ms = 0.0;
+  double infer_decode_ms = 0.0;
+  double infer_outputs_release_ms = 0.0;
+  double infer_total_ms = 0.0;
+  double render_ms = 0.0;
   std::size_t detections = 0;
+  bool alarm_active = false;
   bool ran_inference = false;
   bool used_roi_crop = false;
 };
@@ -207,6 +218,24 @@ struct CameraTuneConfig {
   int warmup_grabs = 6;
 };
 
+struct InputSourceConfig {
+  bool is_camera = true;
+  bool loop_file = false;
+  double source_fps = 0.0;
+};
+
+struct AlarmConfig {
+  bool overlay_enabled = true;
+  int hold_frames = kDefaultAlarmHoldFrames;
+};
+
+struct AlarmState {
+  bool active = false;
+  bool previous_active = false;
+  int missed_frames = 0;
+  int event_count = 0;
+};
+
 struct InferResult {
   FramePacket packet;
   std::vector<Detection> detections;
@@ -218,6 +247,9 @@ struct DispatchOrderState {
 };
 
 const char* ClassName(int class_id) {
+  if (g_single_class_drone_labels.load() && class_id == 0) {
+    return "drone";
+  }
   if (class_id >= 0 && class_id < 80) {
     return kCocoClassNames[class_id];
   }
@@ -272,6 +304,10 @@ int LoadInferWorkers() {
   return ParseEnvInt("RK_YOLO_INFER_WORKERS", 1, 1, 4);
 }
 
+bool LoadProfileLogEnabled() {
+  return ParseEnvBool("RK_YOLO_PROFILE", false);
+}
+
 BoxSmootherConfig LoadBoxSmootherConfig() {
   BoxSmootherConfig config;
   config.enabled = ParseEnvBool("RK_YOLO_BOX_SMOOTH", true);
@@ -290,6 +326,18 @@ CameraTuneConfig LoadCameraTuneConfig() {
       ParseEnvInt("RK_YOLO_CAMERA_FOCUS", config.focus_absolute, 0, 550);
   config.settle_ms = ParseEnvInt("RK_YOLO_CAMERA_SETTLE_MS", config.settle_ms, 0, 5000);
   config.warmup_grabs = ParseEnvInt("RK_YOLO_CAMERA_WARMUP_GRABS", config.warmup_grabs, 0, 30);
+  return config;
+}
+
+bool LoadInputLoopEnabled(bool source_is_camera) {
+  const bool default_value = !source_is_camera;
+  return ParseEnvBool("RK_YOLO_INPUT_LOOP", default_value);
+}
+
+AlarmConfig LoadAlarmConfig() {
+  AlarmConfig config;
+  config.overlay_enabled = ParseEnvBool("RK_YOLO_ALARM_OVERLAY", true);
+  config.hold_frames = ParseEnvInt("RK_YOLO_ALARM_HOLD_FRAMES", kDefaultAlarmHoldFrames, 0, 300);
   return config;
 }
 
@@ -320,6 +368,54 @@ std::string BuildLabel(const Detection& det) {
   std::ostringstream oss;
   oss << ClassName(det.class_id) << " " << std::fixed << std::setprecision(2) << det.score;
   return oss.str();
+}
+
+float MaxScore(const std::vector<Detection>& detections) {
+  float max_score = 0.0f;
+  for (const Detection& det : detections) {
+    max_score = std::max(max_score, det.score);
+  }
+  return max_score;
+}
+
+void UpdateAlarmState(const std::vector<Detection>& detections, const AlarmConfig& config,
+                      AlarmState* state) {
+  state->previous_active = state->active;
+  if (!detections.empty()) {
+    state->active = true;
+    state->missed_frames = 0;
+    return;
+  }
+
+  if (state->active && state->missed_frames < config.hold_frames) {
+    ++state->missed_frames;
+    return;
+  }
+
+  state->active = false;
+  state->missed_frames = 0;
+}
+
+void DrawAlarmOverlay(cv::Mat* frame, const AlarmState& state,
+                      const std::vector<Detection>& detections) {
+  if (frame == nullptr || frame->empty()) {
+    return;
+  }
+
+  const int bar_h = std::max(34, frame->rows / 14);
+  const cv::Scalar bg = state.active ? cv::Scalar(0, 0, 220) : cv::Scalar(40, 120, 40);
+  cv::rectangle(*frame, cv::Rect(0, 0, frame->cols, bar_h), bg, cv::FILLED);
+
+  std::ostringstream oss;
+  if (state.active) {
+    oss << "UAV ALERT | targets=" << detections.size() << " | max_score=" << std::fixed
+        << std::setprecision(2) << MaxScore(detections);
+  } else {
+    oss << "NORMAL | no target";
+  }
+
+  cv::putText(*frame, oss.str(), cv::Point(12, std::min(bar_h - 9, 30)),
+              cv::FONT_HERSHEY_SIMPLEX, 0.72, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
 }
 
 void DrawDetections(cv::Mat* frame, const std::vector<Detection>& detections) {
@@ -745,6 +841,51 @@ bool OpenCamera(const std::string& requested_device, int width, int height, int 
   return false;
 }
 
+bool IsCameraDevicePath(const std::string& source) {
+  return source.rfind("/dev/video", 0) == 0;
+}
+
+bool OpenVideoFile(const std::string& source, cv::VideoCapture* cap, std::string* resolved_source,
+                   double* source_fps) {
+  namespace fs = std::filesystem;
+  fs::path input_path(source);
+  if (!input_path.is_absolute()) {
+    input_path = fs::absolute(input_path);
+  }
+  if (!fs::exists(input_path)) {
+    return false;
+  }
+
+  cap->release();
+  if (!cap->open(input_path.string())) {
+    return false;
+  }
+
+  cv::Mat probe_frame;
+  if (!cap->read(probe_frame) || probe_frame.empty()) {
+    cap->release();
+    return false;
+  }
+  cap->set(cv::CAP_PROP_POS_FRAMES, 0);
+  *resolved_source = input_path.lexically_normal().string();
+  *source_fps = cap->get(cv::CAP_PROP_FPS);
+  return true;
+}
+
+bool OpenInputSource(const std::string& requested_source, int width, int height, int fps,
+                     cv::VideoCapture* cap, InputSourceConfig* source_config,
+                     std::string* resolved_source) {
+  if (IsCameraDevicePath(requested_source)) {
+    source_config->is_camera = true;
+    source_config->source_fps = static_cast<double>(fps);
+    return OpenCamera(requested_source, width, height, fps, cap, resolved_source);
+  }
+
+  source_config->is_camera = false;
+  source_config->loop_file = LoadInputLoopEnabled(false);
+  return OpenVideoFile(requested_source, cap, resolved_source, &source_config->source_fps);
+}
+
 class RtspPublisher {
  public:
   RtspPublisher(int width, int height, int fps, int port, std::string mount_path)
@@ -924,26 +1065,51 @@ class RtspPublisher {
 
 void PrintUsage(const char* argv0) {
   std::cout << "Usage: " << argv0
-            << " [device=/dev/video48] [model=../yolov10n.rknn] [mount=/yolo] [width=640]"
+            << " [source=/dev/video48|input.mp4] [model=../yolov10n.rknn] [mount=/yolo] [width=640]"
                " [height=480] [fps=15] [score=0.30] [nms=0.45] [port=8554]"
                " [detect_every_n=1]"
             << std::endl;
 }
 
-void CaptureLoop(cv::VideoCapture* cap, int width, int height, RtspPublisher* publisher,
-                 BoundedQueue<FramePacket>* capture_queue, PipelineStats* stats) {
+void CaptureLoop(cv::VideoCapture* cap, int width, int height, int fps, RtspPublisher* publisher,
+                 const InputSourceConfig& source_config, BoundedQueue<FramePacket>* capture_queue,
+                 PipelineStats* stats) {
   std::uint64_t frame_index = 0;
   cv::Mat frame;
+  const double playback_fps = (fps > 0) ? static_cast<double>(fps)
+                                        : ((source_config.source_fps > 1.0)
+                                               ? source_config.source_fps
+                                               : static_cast<double>(kDefaultFps));
+  const auto playback_interval = std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(1.0 / playback_fps));
+  auto next_frame_due = std::chrono::steady_clock::now();
 
   while (!g_stop.load()) {
     if (!publisher->HasClient()) {
       capture_queue->Clear();
+      if (!source_config.is_camera) {
+        next_frame_due = std::chrono::steady_clock::now();
+      }
       std::this_thread::sleep_for(std::chrono::milliseconds(50));
       continue;
     }
 
+    if (!source_config.is_camera) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now < next_frame_due) {
+        std::this_thread::sleep_until(next_frame_due);
+      }
+    }
+
     if (!cap->read(frame) || frame.empty()) {
-      std::cerr << "camera read failed" << std::endl;
+      if (!source_config.is_camera && source_config.loop_file) {
+        cap->set(cv::CAP_PROP_POS_FRAMES, 0);
+        next_frame_due = std::chrono::steady_clock::now();
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        continue;
+      }
+      std::cerr << (source_config.is_camera ? "camera read failed" : "input video finished")
+                << std::endl;
       g_stop.store(true);
       break;
     }
@@ -958,6 +1124,9 @@ void CaptureLoop(cv::VideoCapture* cap, int width, int height, RtspPublisher* pu
     packet.captured_at = std::chrono::steady_clock::now();
     capture_queue->Push(std::move(packet));
     ++stats->captured_frames;
+    if (!source_config.is_camera) {
+      next_frame_due = packet.captured_at + playback_interval;
+    }
   }
 
   capture_queue->Stop();
@@ -973,6 +1142,8 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
   std::vector<Detection> last_detections;
   std::vector<Detection> previous_tracked_detections;
   std::vector<Detection> previous_displayed_detections;
+  AlarmState alarm_state;
+  const AlarmConfig alarm_config = LoadAlarmConfig();
   bool have_last_detections = false;
   cv::Mat previous_gray;
   std::uint64_t inference_runs = 0;
@@ -983,6 +1154,7 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
       last_detections.clear();
       previous_tracked_detections.clear();
       previous_displayed_detections.clear();
+      alarm_state = AlarmState{};
       have_last_detections = false;
       previous_gray.release();
       continue;
@@ -1017,7 +1189,15 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
         }
       }
 
-      detections = detector->Infer(infer_view, score_threshold, nms_threshold);
+      InferProfile profile;
+      detections = detector->InferProfiled(infer_view, score_threshold, nms_threshold, &profile);
+      packet.infer_prepare_ms = profile.prepare_ms;
+      packet.infer_inputs_set_ms = profile.inputs_set_ms;
+      packet.infer_run_ms = profile.run_ms;
+      packet.infer_outputs_get_ms = profile.outputs_get_ms;
+      packet.infer_decode_ms = profile.decode_ms;
+      packet.infer_outputs_release_ms = profile.outputs_release_ms;
+      packet.infer_total_ms = profile.total_ms;
       if (packet.used_roi_crop) {
         detections = OffsetDetections(detections, inference_roi.tl(), packet.image.size());
       }
@@ -1057,10 +1237,25 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
       ++stats->reused_frames;
     }
 
+    const auto render_start = std::chrono::steady_clock::now();
     std::vector<Detection> displayed_detections =
         SmoothDetections(detections, previous_displayed_detections, packet.image.size(),
                          smoother_config);
     DrawDetections(&packet.image, displayed_detections);
+    UpdateAlarmState(displayed_detections, alarm_config, &alarm_state);
+    packet.alarm_active = alarm_state.active;
+    if (alarm_config.overlay_enabled) {
+      DrawAlarmOverlay(&packet.image, alarm_state, displayed_detections);
+    }
+    if (alarm_state.active != alarm_state.previous_active) {
+      ++alarm_state.event_count;
+      std::cout << "alarm_event frame=" << packet.index
+                << " state=" << (alarm_state.active ? "on" : "off")
+                << " detections=" << displayed_detections.size() << std::endl;
+    }
+    packet.render_ms =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
+            .count();
     packet.detections = displayed_detections.size();
     previous_displayed_detections = displayed_detections;
 
@@ -1083,12 +1278,20 @@ void InferWorkerLoop(const std::string& model_path, float score_threshold, float
     FramePacket packet;
     while (request_queue->WaitPop(&packet) && !g_stop.load()) {
       const auto infer_start = std::chrono::steady_clock::now();
+      InferProfile profile;
       std::vector<Detection> detections =
-          detector.Infer(packet.image, score_threshold, nms_threshold);
+          detector.InferProfiled(packet.image, score_threshold, nms_threshold, &profile);
       const auto infer_end = std::chrono::steady_clock::now();
 
       packet.work_ms =
           std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+      packet.infer_prepare_ms = profile.prepare_ms;
+      packet.infer_inputs_set_ms = profile.inputs_set_ms;
+      packet.infer_run_ms = profile.run_ms;
+      packet.infer_outputs_get_ms = profile.outputs_get_ms;
+      packet.infer_decode_ms = profile.decode_ms;
+      packet.infer_outputs_release_ms = profile.outputs_release_ms;
+      packet.infer_total_ms = profile.total_ms;
       packet.inferred_at = infer_end;
       packet.ran_inference = true;
       packet.used_roi_crop = false;
@@ -1137,6 +1340,8 @@ void MultiWorkerDispatchLoop(BoundedQueue<FramePacket>* capture_queue,
 void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrderState* order_state,
                            BoundedQueue<FramePacket>* publish_queue, PipelineStats* stats) {
   std::map<std::uint64_t, InferResult> pending_results;
+  AlarmState alarm_state;
+  const AlarmConfig alarm_config = LoadAlarmConfig();
   InferResult result;
   while (true) {
     const bool got_result = result_queue->WaitPop(&result);
@@ -1169,7 +1374,22 @@ void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrd
         }
       }
 
+      const auto render_start = std::chrono::steady_clock::now();
       DrawDetections(&ready.packet.image, ready.detections);
+      UpdateAlarmState(ready.detections, alarm_config, &alarm_state);
+      ready.packet.alarm_active = alarm_state.active;
+      if (alarm_config.overlay_enabled) {
+        DrawAlarmOverlay(&ready.packet.image, alarm_state, ready.detections);
+      }
+      if (alarm_state.active != alarm_state.previous_active) {
+        ++alarm_state.event_count;
+        std::cout << "alarm_event frame=" << ready.packet.index
+                  << " state=" << (alarm_state.active ? "on" : "off")
+                  << " detections=" << ready.detections.size() << std::endl;
+      }
+      ready.packet.render_ms =
+          std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
+              .count();
       ready.packet.detections = ready.detections.size();
       ++stats->npu_inference_runs;
       ++stats->inferred_frames;
@@ -1186,6 +1406,7 @@ void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrd
 
 void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_queue,
                  BoundedQueue<FramePacket>* publish_queue, PipelineStats* stats) {
+  const bool profile_log_enabled = LoadProfileLogEnabled();
   auto last_report = std::chrono::steady_clock::now();
   auto interval_start = last_report;
   std::uint64_t interval_frames = 0;
@@ -1235,6 +1456,7 @@ void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_qu
                 << " roi_crop_runs=" << total_roi_crop_runs
                 << " dispatch_dropped=" << total_dispatch_dropped
                 << " detections=" << packet.detections
+                << " alarm=" << (packet.alarm_active ? "on" : "off")
                 << " last_mode="
                 << (packet.ran_inference ? (packet.used_roi_crop ? "infer_roi" : "infer_full")
                                          : "reuse")
@@ -1244,8 +1466,19 @@ void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_qu
                 << " roi_fps=" << std::fixed << std::setprecision(2) << roi_fps
                 << " end_to_end_ms=" << std::fixed << std::setprecision(2) << end_to_end_ms
                 << " dropped_capture=" << capture_queue->dropped_items()
-                << " dropped_publish=" << publish_queue->dropped_items()
-                << std::endl;
+                << " dropped_publish=" << publish_queue->dropped_items();
+      if (profile_log_enabled) {
+        std::cout << " prepare_ms=" << std::fixed << std::setprecision(2)
+                  << packet.infer_prepare_ms
+                  << " inputs_set_ms=" << packet.infer_inputs_set_ms
+                  << " rknn_run_ms=" << packet.infer_run_ms
+                  << " outputs_get_ms=" << packet.infer_outputs_get_ms
+                  << " decode_ms=" << packet.infer_decode_ms
+                  << " outputs_release_ms=" << packet.infer_outputs_release_ms
+                  << " infer_total_ms=" << packet.infer_total_ms
+                  << " render_ms=" << packet.render_ms;
+      }
+      std::cout << std::endl;
       last_report = now;
       interval_start = now;
       interval_frames = 0;
@@ -1267,7 +1500,7 @@ int main(int argc, char** argv) {
   std::signal(SIGTERM, HandleSignal);
   gst_init(&argc, &argv);
 
-  const std::string device = (argc >= 2) ? argv[1] : "/dev/video48";
+  const std::string input_source = (argc >= 2) ? argv[1] : "/dev/video48";
   const std::string model_path = ResolveModelPath(argc, argv);
   const std::string mount_path = (argc >= 4) ? argv[3] : "/yolo";
   const int width = (argc >= 5) ? std::atoi(argv[4]) : kDefaultWidth;
@@ -1284,23 +1517,31 @@ int main(int argc, char** argv) {
   const TrackMode track_mode = LoadTrackMode();
   const BoxSmootherConfig smoother_config = LoadBoxSmootherConfig();
   const CameraTuneConfig camera_tune_config = LoadCameraTuneConfig();
+  const AlarmConfig alarm_config = LoadAlarmConfig();
   const int infer_workers = LoadInferWorkers();
   const bool use_multi_worker_mode = infer_workers > 1 && detect_every_n == 1;
 
   cv::VideoCapture cap;
-  std::string resolved_device;
-  if (!OpenCamera(device, width, height, fps, &cap, &resolved_device)) {
-    std::cerr << "failed to open camera: " << device << std::endl;
+  std::string resolved_source;
+  InputSourceConfig source_config;
+  if (!OpenInputSource(input_source, width, height, fps, &cap, &source_config, &resolved_source)) {
+    std::cerr << "failed to open input source: " << input_source << std::endl;
     return 2;
   }
   std::string camera_tune_status;
-  ApplyCameraTune(resolved_device, &cap, camera_tune_config, &camera_tune_status);
+  if (source_config.is_camera) {
+    ApplyCameraTune(resolved_source, &cap, camera_tune_config, &camera_tune_status);
+  } else {
+    camera_tune_status = source_config.loop_file ? "input_loop=on" : "input_loop=off";
+  }
 
   YoloRknnDetector detector;
   if (!detector.Load(model_path)) {
     std::cerr << "failed to load model: " << model_path << std::endl;
     return 3;
   }
+  const int model_class_count = detector.class_count();
+  g_single_class_drone_labels.store(model_class_count == 1);
   if (use_multi_worker_mode) {
     detector.Release();
   }
@@ -1311,12 +1552,17 @@ int main(int argc, char** argv) {
     return 4;
   }
 
-  std::cout << "camera=" << resolved_device << std::endl;
-  if (resolved_device != device) {
-    std::cout << "camera fallback used for requested device " << device << std::endl;
+  std::cout << "source=" << resolved_source << std::endl;
+  std::cout << "source_type=" << (source_config.is_camera ? "camera" : "video_file") << std::endl;
+  if (resolved_source != input_source) {
+    std::cout << "source fallback used for requested source " << input_source << std::endl;
   }
   std::cout << camera_tune_status << std::endl;
   std::cout << "model=" << model_path << std::endl;
+  std::cout << "model_classes=" << model_class_count << std::endl;
+  std::cout << "label_mode="
+            << (g_single_class_drone_labels.load() ? "single-class-drone" : "coco")
+            << std::endl;
   std::cout << "rtsp path=rtsp://<board-ip>:" << port << mount_path << std::endl;
   std::cout << "pipeline=capture -> infer -> publish" << std::endl;
   std::cout << "detect_every_n=" << detect_every_n << std::endl;
@@ -1324,6 +1570,8 @@ int main(int argc, char** argv) {
   std::cout << "box_smooth=" << (smoother_config.enabled ? "on" : "off")
             << " alpha=" << smoother_config.alpha
             << " min_iou=" << smoother_config.min_iou << std::endl;
+  std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
+            << " hold_frames=" << alarm_config.hold_frames << std::endl;
   std::cout << "infer_workers=" << infer_workers << std::endl;
   std::cout << "dynamic_roi=" << (roi_config.enabled ? "on" : "off")
             << " margin=" << roi_config.margin_ratio
@@ -1342,7 +1590,8 @@ int main(int argc, char** argv) {
   PipelineStats stats;
   BoundedQueue<FramePacket> capture_queue(kCaptureQueueCapacity);
   BoundedQueue<FramePacket> publish_queue(kPublishQueueCapacity);
-  std::thread capture_thread(CaptureLoop, &cap, width, height, &publisher, &capture_queue, &stats);
+  std::thread capture_thread(CaptureLoop, &cap, width, height, fps, &publisher, source_config,
+                             &capture_queue, &stats);
   std::thread publish_thread(PublishLoop, &publisher, &capture_queue, &publish_queue, &stats);
 
   std::thread infer_thread;

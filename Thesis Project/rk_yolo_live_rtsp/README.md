@@ -3,6 +3,7 @@
 Standalone RK3588 live demo:
 
 - capture from a USB UVC camera
+- or replay from a local video file through the same pipeline
 - run YOLOv10 through RKNN
 - draw boxes on each frame
 - publish an RTSP stream through `GStreamer RTSP Server`
@@ -31,17 +32,30 @@ Example:
 
 ```bash
 ./rk_yolo_live_rtsp /dev/video48 ../../yolov10n.rknn /yolo 640 480 15 0.30 0.45 8554 2
+./rk_yolo_live_rtsp /home/ubuntu/public_videos/sample.mp4 ../../yolov10n.rknn /yolo 640 480 15 0.30 0.45 8554 3
+```
+
+Drone-specific fixed-video RTSP smoke test:
+
+```bash
+RK_YOLO_INPUT_LOOP=1 RK_YOLO_BOX_SMOOTH=0 ./rk_yolo_live_rtsp \
+  /home/ubuntu/public_videos/video01.mp4 \
+  ../../training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.fp.v220.rknn \
+  /drone 640 480 15 0.35 0.45 8554 3
 ```
 
 Then open this on your PC:
 
 ```text
 rtsp://192.168.10.186:8554/yolo
+rtsp://192.168.2.156:8554/drone
 ```
 
 ## Notes
 
 - The tool requests `MJPG` from the USB camera to reduce CPU load during capture.
+- If the first argument is not a `/dev/video*` path, it is treated as a local video file input and opened with OpenCV's default backend.
+- For local video files, set `RK_YOLO_INPUT_LOOP=1` if you want the file to loop after reaching the end. This is useful for repeatable fixed-input RTSP experiments.
 - `mpph264enc` is used through GStreamer for H.264 encoding on RK3588.
 - The stream starts producing frames after a client connects to the RTSP URL.
 - The internal queues are intentionally small and will drop old frames to keep latency bounded.
@@ -57,6 +71,9 @@ rtsp://192.168.10.186:8554/yolo
 - `RK_YOLO_BOX_SMOOTH=1` enables lightweight temporal box smoothing on the displayed detections and is on by default.
 - `RK_YOLO_BOX_SMOOTH_ALPHA=0.60` controls how strongly the new frame pulls the box toward the latest detection.
 - `RK_YOLO_BOX_SMOOTH_IOU=0.10` is the minimum IoU used to match boxes across adjacent frames for smoothing.
+- `RK_YOLO_ALARM_OVERLAY=1` enables a software alarm banner in the live RTSP image and is on by default.
+- `RK_YOLO_ALARM_OVERLAY=0` disables only the banner while keeping detection boxes and RTSP output unchanged.
+- `RK_YOLO_ALARM_HOLD_FRAMES=5` keeps the alarm active for a few missed frames to avoid flicker.
 - Dynamic ROI is enabled by default for keyframes with existing detections: it crops a generous search window around the last boxes, and periodically falls back to full-frame inference to recover from drift.
 - You can tune ROI behavior with environment variables:
   - `RK_YOLO_DYNAMIC_ROI=0` disables ROI cropping
@@ -73,5 +90,8 @@ rtsp://192.168.10.186:8554/yolo
   - `RK_YOLO_CAMERA_WARMUP_GRABS=6` controls how many post-tune frames are discarded before live capture begins
 - You can enable experimental multi-context NPU inference with `RK_YOLO_INFER_WORKERS=2`, but it is only activated when `detect_every_n=1`.
 - The multi-context path is aimed at throughput experiments and may increase end-to-end latency if you try to use it as a direct replacement for the current real-time viewing setup.
-- Runtime logs print `stream_fps`, `npu_fps`, `roi_fps`, and `work_ms` so you can compare full-frame inference, ROI inference, and tracking cost.
-- If you later move the new drone-specific model into this live path, start from the offline-validated threshold pair first; the current recommendation is `score=0.35`, `nms=0.45`.
+- Runtime logs print `stream_fps`, `npu_fps`, `roi_fps`, `work_ms`, and `alarm` so you can compare full-frame inference, ROI inference, tracking cost, and software-alarm state.
+- Set `RK_YOLO_PROFILE=1` only during profiling runs if you need stage-level timing for `prepare`, `rknn_inputs_set`, `rknn_run`, output decode, and rendering. Keep it off for normal demonstrations.
+- `RK_YOLO_ZERO_COPY_INPUT=1` enables an experimental RKNN input-memory path. It is disabled by default because the current float16-input model still moves most conversion cost into `rknn_run`.
+- The live overlay automatically labels single-class RKNN models as `drone`; multi-class COCO-style models keep the original COCO label table.
+- For the drone-specific model, start from the offline-validated threshold pair first; the current recommendation is `score=0.35`, `nms=0.45`.
