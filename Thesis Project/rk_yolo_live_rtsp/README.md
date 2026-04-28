@@ -67,6 +67,8 @@ rtsp://192.168.2.156:8554/drone
 - `RK_YOLO_RGA_FRAME_RESIZE=1` enables an optional RGA path for resizing captured frames to the RTSP output size before inference and publishing. It is off by default and falls back to OpenCV if RGA rejects the frame.
 - `RK_YOLO_RGA_PUBLISH_RESIZE=1` is accepted as a compatibility alias for the same frame-resize experiment.
 - Runtime logs include `rga_frame_resize_runs` and `opencv_frame_resize_runs` so this experiment can be verified from stdout.
+- `RK_YOLO_RGA_PUBLISH_NV12=1` enables an experimental RTSP publishing path that converts the final BGR display frame to NV12 with RGA and feeds `mpph264enc` directly, bypassing `videoconvert`.
+- Runtime logs include `rga_publish_nv12_runs` and `opencv_publish_nv12_runs` so the publish-format experiment can be verified from stdout. OpenCV is used only as a conversion fallback if RGA rejects a frame.
 - If the USB camera reconnects and its node changes from `/dev/video48` to a nearby node such as `/dev/video49`, the tool will probe nearby `/dev/video*` devices automatically.
 - For the newly tested `HBS Camera` UVC module, the tool now applies a verified startup tune by default:
   - `zoom_absolute=20`

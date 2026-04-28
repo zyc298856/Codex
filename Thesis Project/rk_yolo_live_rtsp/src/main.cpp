@@ -195,6 +195,8 @@ struct PipelineStats {
   std::atomic<std::uint64_t> dispatch_dropped_frames{0};
   std::atomic<std::uint64_t> rga_frame_resize_runs{0};
   std::atomic<std::uint64_t> opencv_frame_resize_runs{0};
+  std::atomic<std::uint64_t> rga_publish_nv12_runs{0};
+  std::atomic<std::uint64_t> opencv_publish_nv12_runs{0};
 };
 
 struct RoiConfig {
@@ -323,6 +325,10 @@ bool LoadRgaFrameResizeEnabled() {
   return ParseEnvBool("RK_YOLO_RGA_PUBLISH_RESIZE", false);
 }
 
+bool LoadRgaPublishNv12Enabled() {
+  return ParseEnvBool("RK_YOLO_RGA_PUBLISH_NV12", false);
+}
+
 BoxSmootherConfig LoadBoxSmootherConfig() {
   BoxSmootherConfig config;
   config.enabled = ParseEnvBool("RK_YOLO_BOX_SMOOTH", true);
@@ -421,6 +427,81 @@ bool ResizeBgrFrameWithRga(const cv::Mat& bgr, cv::Mat* resized_bgr, int width, 
   }
   return true;
 #endif
+}
+
+bool ConvertBgrToNv12WithRga(const cv::Mat& bgr, cv::Mat* nv12) {
+#ifndef HAVE_RGA
+  (void)bgr;
+  (void)nv12;
+  return false;
+#else
+  static bool warned = false;
+  if (bgr.empty() || bgr.type() != CV_8UC3 || nv12 == nullptr || bgr.cols <= 0 || bgr.rows <= 0 ||
+      (bgr.cols % 2) != 0 || (bgr.rows % 2) != 0) {
+    return false;
+  }
+
+  cv::Mat bgr_contiguous = bgr.isContinuous() ? bgr : bgr.clone();
+  nv12->create(bgr.rows + bgr.rows / 2, bgr.cols, CV_8UC1);
+
+  rga_buffer_t src = wrapbuffer_virtualaddr(const_cast<unsigned char*>(bgr_contiguous.data),
+                                            bgr_contiguous.cols, bgr_contiguous.rows,
+                                            RK_FORMAT_BGR_888);
+  rga_buffer_t dst = wrapbuffer_virtualaddr(nv12->data, bgr.cols, bgr.rows,
+                                            RK_FORMAT_YCbCr_420_SP);
+
+  IM_STATUS status = imcheck(src, dst, {}, {});
+  if (status != IM_STATUS_NOERROR) {
+    if (!warned) {
+      std::cerr << "RGA BGR-to-NV12 imcheck failed: " << imStrError(status)
+                << "; fallback to OpenCV NV12 conversion" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  status = imresize(src, dst);
+  if (status != IM_STATUS_SUCCESS) {
+    if (!warned) {
+      std::cerr << "RGA BGR-to-NV12 conversion failed: " << imStrError(status)
+                << "; fallback to OpenCV NV12 conversion" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+  return true;
+#endif
+}
+
+bool ConvertBgrToNv12WithOpenCv(const cv::Mat& bgr, cv::Mat* nv12) {
+  if (bgr.empty() || bgr.type() != CV_8UC3 || nv12 == nullptr || (bgr.cols % 2) != 0 ||
+      (bgr.rows % 2) != 0) {
+    return false;
+  }
+
+  cv::Mat i420;
+  cv::cvtColor(bgr, i420, cv::COLOR_BGR2YUV_I420);
+  nv12->create(bgr.rows + bgr.rows / 2, bgr.cols, CV_8UC1);
+
+  const int width = bgr.cols;
+  const int height = bgr.rows;
+  const int y_size = width * height;
+  const int uv_width = width / 2;
+  const int uv_height = height / 2;
+
+  std::memcpy(nv12->data, i420.data, static_cast<std::size_t>(y_size));
+  const unsigned char* u_plane = i420.data + y_size;
+  const unsigned char* v_plane = u_plane + (y_size / 4);
+  unsigned char* uv_plane = nv12->data + y_size;
+  for (int y = 0; y < uv_height; ++y) {
+    for (int x = 0; x < uv_width; ++x) {
+      const int uv_index = y * width + x * 2;
+      const int planar_index = y * uv_width + x;
+      uv_plane[uv_index] = u_plane[planar_index];
+      uv_plane[uv_index + 1] = v_plane[planar_index];
+    }
+  }
+  return true;
 }
 
 std::string BuildLabel(const Detection& det) {
@@ -947,12 +1028,14 @@ bool OpenInputSource(const std::string& requested_source, int width, int height,
 
 class RtspPublisher {
  public:
-  RtspPublisher(int width, int height, int fps, int port, std::string mount_path)
+  RtspPublisher(int width, int height, int fps, int port, std::string mount_path,
+                bool publish_nv12)
       : width_(width),
         height_(height),
         fps_(fps),
         port_(port),
         mount_path_(std::move(mount_path)),
+        publish_nv12_(publish_nv12),
         loop_(nullptr),
         server_(nullptr),
         factory_(nullptr),
@@ -977,12 +1060,15 @@ class RtspPublisher {
     port_text << port_;
     gst_rtsp_server_set_service(server_, port_text.str().c_str());
 
+    const std::string caps_format = publish_nv12_ ? "NV12" : "BGR";
+    const std::string converter = publish_nv12_ ? "" : " ! videoconvert";
     const std::string launch =
         "( appsrc name=mysrc is-live=true format=time do-timestamp=true "
-        "caps=video/x-raw,format=BGR,width=" +
-        std::to_string(width_) + ",height=" + std::to_string(height_) + ",framerate=" +
-        std::to_string(fps_) + "/1 ! videoconvert ! mpph264enc ! h264parse config-interval=1 ! "
-                              "rtph264pay name=pay0 pt=96 config-interval=1 )";
+        "caps=video/x-raw,format=" +
+        caps_format + ",width=" + std::to_string(width_) + ",height=" +
+        std::to_string(height_) + ",framerate=" + std::to_string(fps_) + "/1" + converter +
+        " ! mpph264enc ! h264parse config-interval=1 ! "
+        "rtph264pay name=pay0 pt=96 config-interval=1 )";
     gst_rtsp_media_factory_set_launch(factory_, launch.c_str());
     gst_rtsp_media_factory_set_shared(factory_, TRUE);
     g_signal_connect(factory_, "media-configure", G_CALLBACK(&RtspPublisher::OnMediaConfigure),
@@ -1078,6 +1164,8 @@ class RtspPublisher {
     return true;
   }
 
+  bool publish_nv12() const { return publish_nv12_; }
+
  private:
   static void OnMediaConfigure(GstRTSPMediaFactory*, GstRTSPMedia* media, gpointer user_data) {
     RtspPublisher* self = static_cast<RtspPublisher*>(user_data);
@@ -1110,6 +1198,7 @@ class RtspPublisher {
   int fps_;
   int port_;
   std::string mount_path_;
+  bool publish_nv12_;
 
   GMainLoop* loop_;
   GstRTSPServer* server_;
@@ -1473,7 +1562,8 @@ void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrd
   publish_queue->Stop();
 }
 
-void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_queue,
+void PublishLoop(RtspPublisher* publisher, bool use_rga_publish_nv12,
+                 BoundedQueue<FramePacket>* capture_queue,
                  BoundedQueue<FramePacket>* publish_queue, PipelineStats* stats) {
   const bool profile_log_enabled = LoadProfileLogEnabled();
   auto last_report = std::chrono::steady_clock::now();
@@ -1488,7 +1578,24 @@ void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_qu
       continue;
     }
 
-    if (!publisher->PushFrame(packet.image, packet.index)) {
+    const cv::Mat* frame_to_publish = &packet.image;
+    cv::Mat nv12_frame;
+    if (publisher->publish_nv12()) {
+      const bool converted_with_rga =
+          use_rga_publish_nv12 && ConvertBgrToNv12WithRga(packet.image, &nv12_frame);
+      if (converted_with_rga) {
+        ++stats->rga_publish_nv12_runs;
+      } else {
+        if (!ConvertBgrToNv12WithOpenCv(packet.image, &nv12_frame)) {
+          std::cerr << "failed to convert BGR frame to NV12 for RTSP publishing" << std::endl;
+          continue;
+        }
+        ++stats->opencv_publish_nv12_runs;
+      }
+      frame_to_publish = &nv12_frame;
+    }
+
+    if (!publisher->PushFrame(*frame_to_publish, packet.index)) {
       std::cout << "rtsp client disconnected, waiting for the next client..." << std::endl;
       publish_queue->Clear();
       continue;
@@ -1507,6 +1614,8 @@ void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_qu
       const std::uint64_t total_dispatch_dropped = stats->dispatch_dropped_frames.load();
       const std::uint64_t total_rga_frame_resize = stats->rga_frame_resize_runs.load();
       const std::uint64_t total_opencv_frame_resize = stats->opencv_frame_resize_runs.load();
+      const std::uint64_t total_rga_publish_nv12 = stats->rga_publish_nv12_runs.load();
+      const std::uint64_t total_opencv_publish_nv12 = stats->opencv_publish_nv12_runs.load();
       const double stream_fps = (wall_seconds > 0.0) ? (interval_frames / wall_seconds) : 0.0;
       const double npu_fps =
           (wall_seconds > 0.0)
@@ -1527,6 +1636,8 @@ void PublishLoop(RtspPublisher* publisher, BoundedQueue<FramePacket>* capture_qu
                 << " roi_crop_runs=" << total_roi_crop_runs
                 << " rga_frame_resize_runs=" << total_rga_frame_resize
                 << " opencv_frame_resize_runs=" << total_opencv_frame_resize
+                << " rga_publish_nv12_runs=" << total_rga_publish_nv12
+                << " opencv_publish_nv12_runs=" << total_opencv_publish_nv12
                 << " dispatch_dropped=" << total_dispatch_dropped
                 << " detections=" << packet.detections
                 << " alarm=" << (packet.alarm_active ? "on" : "off")
@@ -1592,6 +1703,7 @@ int main(int argc, char** argv) {
   const CameraTuneConfig camera_tune_config = LoadCameraTuneConfig();
   const AlarmConfig alarm_config = LoadAlarmConfig();
   const bool use_rga_frame_resize = LoadRgaFrameResizeEnabled();
+  const bool use_rga_publish_nv12 = LoadRgaPublishNv12Enabled();
   const int infer_workers = LoadInferWorkers();
   const bool use_multi_worker_mode = infer_workers > 1 && detect_every_n == 1;
 
@@ -1620,7 +1732,7 @@ int main(int argc, char** argv) {
     detector.Release();
   }
 
-  RtspPublisher publisher(width, height, fps, port, mount_path);
+  RtspPublisher publisher(width, height, fps, port, mount_path, use_rga_publish_nv12);
   if (!publisher.Start()) {
     std::cerr << "failed to start RTSP publisher" << std::endl;
     return 4;
@@ -1647,6 +1759,8 @@ int main(int argc, char** argv) {
   std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
             << " hold_frames=" << alarm_config.hold_frames << std::endl;
   std::cout << "rga_frame_resize=" << (use_rga_frame_resize ? "on" : "off") << std::endl;
+  std::cout << "publish_format=" << (use_rga_publish_nv12 ? "nv12_rga" : "bgr_videoconvert")
+            << std::endl;
   std::cout << "infer_workers=" << infer_workers << std::endl;
   std::cout << "dynamic_roi=" << (roi_config.enabled ? "on" : "off")
             << " margin=" << roi_config.margin_ratio
@@ -1667,7 +1781,8 @@ int main(int argc, char** argv) {
   BoundedQueue<FramePacket> publish_queue(kPublishQueueCapacity);
   std::thread capture_thread(CaptureLoop, &cap, width, height, fps, use_rga_frame_resize,
                              &publisher, source_config, &capture_queue, &stats);
-  std::thread publish_thread(PublishLoop, &publisher, &capture_queue, &publish_queue, &stats);
+  std::thread publish_thread(PublishLoop, &publisher, use_rga_publish_nv12, &capture_queue,
+                             &publish_queue, &stats);
 
   std::thread infer_thread;
   std::thread dispatch_thread;
