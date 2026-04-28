@@ -10,6 +10,7 @@ find_package(Threads REQUIRED)
 
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(GST REQUIRED gstreamer-1.0 gstreamer-app-1.0 gstreamer-rtsp-server-1.0)
+pkg_check_modules(RGA QUIET librga)
 
 find_path(
   RKNN_INCLUDE_DIR
@@ -63,6 +64,16 @@ target_link_libraries(
     ${RKNN_LIBRARY}
     Threads::Threads
 )
+
+if(RGA_FOUND)
+  target_compile_definitions(rk_yolo_live_rtsp PRIVATE HAVE_RGA=1)
+  target_include_directories(rk_yolo_live_rtsp PRIVATE ${RGA_INCLUDE_DIRS})
+  target_link_directories(rk_yolo_live_rtsp PRIVATE ${RGA_LIBRARY_DIRS})
+  target_link_libraries(rk_yolo_live_rtsp PRIVATE ${RGA_LIBRARIES})
+  message(STATUS "librga found: optional RK_YOLO_PREPROCESS=rga/rga_cvt_resize paths enabled")
+else()
+  message(WARNING "librga not found: RK_YOLO_PREPROCESS=rga/rga_cvt_resize will fall back to OpenCV")
+endif()
 
 target_compile_options(
   rk_yolo_live_rtsp

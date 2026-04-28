@@ -59,6 +59,11 @@ rtsp://192.168.2.156:8554/drone
 - `mpph264enc` is used through GStreamer for H.264 encoding on RK3588.
 - The stream starts producing frames after a client connects to the RTSP URL.
 - The internal queues are intentionally small and will drop old frames to keep latency bounded.
+- Preprocessing defaults to OpenCV. When `librga` is available at build time, you can compare the optional hardware preprocessing paths without changing code:
+  - `RK_YOLO_PREPROCESS=opencv` keeps the stable default path
+  - `RK_YOLO_PREPROCESS=rga` uses OpenCV for BGR-to-RGB conversion and RGA for resize
+  - `RK_YOLO_PREPROCESS=rga_cvt_resize` uses RGA for BGR-to-RGB conversion and resize
+  - if `librga` is not detected, the program prints a fallback warning and continues with OpenCV
 - If the USB camera reconnects and its node changes from `/dev/video48` to a nearby node such as `/dev/video49`, the tool will probe nearby `/dev/video*` devices automatically.
 - For the newly tested `HBS Camera` UVC module, the tool now applies a verified startup tune by default:
   - `zoom_absolute=20`
