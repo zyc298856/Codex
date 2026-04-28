@@ -1,13 +1,22 @@
 #include "yolo_rknn.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <numeric>
 #include <sstream>
 
 namespace {
+
+using Clock = std::chrono::steady_clock;
+
+double ElapsedMs(Clock::time_point start, Clock::time_point end) {
+  return std::chrono::duration<double, std::milli>(end - start).count();
+}
 
 std::string TensorTypeToString(rknn_tensor_type type) {
   switch (type) {
@@ -78,6 +87,87 @@ bool RawScoreDebugEnabled() {
   return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
 }
 
+bool LayoutDebugEnabled() {
+  const char* env_value = std::getenv("RK_YOLO_DEBUG_LAYOUT");
+  return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
+}
+
+bool ZeroCopyInputEnabled() {
+  const char* env_value = std::getenv("RK_YOLO_ZERO_COPY_INPUT");
+  return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
+}
+
+bool LooksLikeFeatureAxis(int dim) {
+  // Current deployments use compact per-box feature layouts such as:
+  // - 84  : generic COCO-style raw head
+  // - 5   : single-class raw head (cx, cy, w, h, score)
+  // - 6   : end2end direct boxes (x1, y1, x2, y2, score, class)
+  return dim >= 5 && dim <= 256;
+}
+
+struct OutputLayout {
+  int feature_count = 0;
+  int box_count = 0;
+  bool direct_boxes = false;
+};
+
+OutputLayout ResolveOutputLayout(const rknn_tensor_attr& output_attr) {
+  OutputLayout layout;
+  if (output_attr.n_dims < 3) {
+    return layout;
+  }
+
+  const int last = output_attr.n_dims - 1;
+  const int dim_a = output_attr.dims[last - 1];
+  const int dim_b = output_attr.dims[last];
+
+  if (dim_a == 6 && dim_b > dim_a) {
+    layout.feature_count = dim_a;
+    layout.box_count = dim_b;
+    layout.direct_boxes = true;
+  } else if (dim_b == 6 && dim_a > dim_b) {
+    layout.feature_count = dim_b;
+    layout.box_count = dim_a;
+    layout.direct_boxes = true;
+  } else if (LooksLikeFeatureAxis(dim_a) && dim_b > dim_a) {
+    layout.feature_count = dim_a;
+    layout.box_count = dim_b;
+  } else if (LooksLikeFeatureAxis(dim_b) && dim_a > dim_b) {
+    layout.feature_count = dim_b;
+    layout.box_count = dim_a;
+  }
+
+  return layout;
+}
+
+void PrintLayoutStats(const float* data, const OutputLayout& layout) {
+  if (data == nullptr || layout.feature_count <= 0 || layout.box_count <= 0) {
+    return;
+  }
+
+  auto print_stats = [&](bool channel_first, const char* label) {
+    std::cout << "layout-debug " << label << std::endl;
+    for (int feature_idx = 0; feature_idx < layout.feature_count; ++feature_idx) {
+      float min_value = std::numeric_limits<float>::infinity();
+      float max_value = -std::numeric_limits<float>::infinity();
+      double sum = 0.0;
+      for (int box_idx = 0; box_idx < layout.box_count; ++box_idx) {
+        const float value = channel_first
+                                ? data[static_cast<std::size_t>(feature_idx) * layout.box_count + box_idx]
+                                : data[static_cast<std::size_t>(box_idx) * layout.feature_count + feature_idx];
+        min_value = std::min(min_value, value);
+        max_value = std::max(max_value, value);
+        sum += value;
+      }
+      std::cout << "  feature[" << feature_idx << "] min=" << min_value << " max=" << max_value
+                << " mean=" << (sum / layout.box_count) << std::endl;
+    }
+  };
+
+  print_stats(true, "channel_first");
+  print_stats(false, "box_first");
+}
+
 }  // namespace
 
 YoloRknnDetector::YoloRknnDetector()
@@ -86,6 +176,10 @@ YoloRknnDetector::YoloRknnDetector()
       model_width_(0),
       model_height_(0),
       model_channels_(0),
+      class_count_(0),
+      zero_copy_input_enabled_(false),
+      zero_copy_input_mem_(nullptr),
+      zero_copy_input_attr_{},
       loaded_(false) {}
 
 YoloRknnDetector::~YoloRknnDetector() { Release(); }
@@ -148,11 +242,27 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
   std::cout << "resolved model input: " << model_width_ << "x" << model_height_
             << " channels=" << model_channels_ << std::endl;
 
+  const OutputLayout output_layout = ResolveOutputLayout(output_attrs_.front());
+  class_count_ = output_layout.direct_boxes ? 0 : std::max(0, output_layout.feature_count - 4);
+  std::cout << "resolved model classes: " << class_count_ << std::endl;
+
+  if (ZeroCopyInputEnabled()) {
+    zero_copy_input_enabled_ = InitZeroCopyInput();
+    std::cout << "zero_copy_input=" << (zero_copy_input_enabled_ ? "on" : "failed_fallback")
+              << std::endl;
+  } else {
+    std::cout << "zero_copy_input=off" << std::endl;
+  }
+
   loaded_ = true;
   return true;
 }
 
 void YoloRknnDetector::Release() {
+  if (ctx_ != 0 && zero_copy_input_mem_ != nullptr) {
+    rknn_destroy_mem(ctx_, zero_copy_input_mem_);
+    zero_copy_input_mem_ = nullptr;
+  }
   if (ctx_ != 0) {
     rknn_destroy(ctx_);
     ctx_ = 0;
@@ -163,6 +273,9 @@ void YoloRknnDetector::Release() {
   model_width_ = 0;
   model_height_ = 0;
   model_channels_ = 0;
+  class_count_ = 0;
+  zero_copy_input_enabled_ = false;
+  zero_copy_input_attr_ = {};
   loaded_ = false;
 }
 
@@ -202,6 +315,69 @@ bool YoloRknnDetector::PrepareInput(const cv::Mat& frame, std::vector<unsigned c
   return true;
 }
 
+bool YoloRknnDetector::InitZeroCopyInput() {
+  if (ctx_ == 0 || input_attrs_.empty() || model_width_ <= 0 || model_height_ <= 0 ||
+      model_channels_ <= 0) {
+    return false;
+  }
+
+  zero_copy_input_attr_ = input_attrs_.front();
+  zero_copy_input_attr_.index = 0;
+  zero_copy_input_attr_.type = RKNN_TENSOR_UINT8;
+  zero_copy_input_attr_.fmt = RKNN_TENSOR_NHWC;
+  zero_copy_input_attr_.pass_through = 0;
+  zero_copy_input_attr_.size =
+      static_cast<uint32_t>(model_width_ * model_height_ * model_channels_);
+  if (zero_copy_input_attr_.size_with_stride < zero_copy_input_attr_.size) {
+    zero_copy_input_attr_.size_with_stride = zero_copy_input_attr_.size;
+  }
+
+  zero_copy_input_mem_ = rknn_create_mem(ctx_, zero_copy_input_attr_.size_with_stride);
+  if (zero_copy_input_mem_ == nullptr) {
+    std::cerr << "rknn_create_mem for zero-copy input failed" << std::endl;
+    return false;
+  }
+  if (zero_copy_input_mem_->virt_addr == nullptr) {
+    std::cerr << "rknn_create_mem returned null zero-copy virtual address" << std::endl;
+    rknn_destroy_mem(ctx_, zero_copy_input_mem_);
+    zero_copy_input_mem_ = nullptr;
+    return false;
+  }
+
+  std::memset(zero_copy_input_mem_->virt_addr, 0, zero_copy_input_mem_->size);
+  const int ret = rknn_set_io_mem(ctx_, zero_copy_input_mem_, &zero_copy_input_attr_);
+  if (ret != RKNN_SUCC) {
+    std::cerr << "rknn_set_io_mem for zero-copy input failed: " << ret << std::endl;
+    rknn_destroy_mem(ctx_, zero_copy_input_mem_);
+    zero_copy_input_mem_ = nullptr;
+    return false;
+  }
+
+  std::cout << "zero-copy input mem size=" << zero_copy_input_mem_->size
+            << " attr_size=" << zero_copy_input_attr_.size
+            << " stride_size=" << zero_copy_input_attr_.size_with_stride << std::endl;
+  return true;
+}
+
+bool YoloRknnDetector::UseZeroCopyInput(const std::vector<unsigned char>& input_u8) {
+  if (!zero_copy_input_enabled_ || zero_copy_input_mem_ == nullptr ||
+      zero_copy_input_mem_->virt_addr == nullptr) {
+    return false;
+  }
+  if (input_u8.size() > zero_copy_input_mem_->size) {
+    std::cerr << "zero-copy input buffer is too small: need " << input_u8.size()
+              << " bytes, have " << zero_copy_input_mem_->size << std::endl;
+    return false;
+  }
+
+  std::memcpy(zero_copy_input_mem_->virt_addr, input_u8.data(), input_u8.size());
+  if (input_u8.size() < zero_copy_input_mem_->size) {
+    std::memset(static_cast<unsigned char*>(zero_copy_input_mem_->virt_addr) + input_u8.size(), 0,
+                zero_copy_input_mem_->size - input_u8.size());
+  }
+  return true;
+}
+
 std::vector<Detection> YoloRknnDetector::DecodeOutput(const float* data, std::size_t element_count,
                                                       const rknn_tensor_attr& output_attr,
                                                       const LetterBoxInfo& letterbox,
@@ -213,30 +389,14 @@ std::vector<Detection> YoloRknnDetector::DecodeOutput(const float* data, std::si
     return candidates;
   }
 
-  int feature_count = 0;
-  int box_count = 0;
-  bool direct_boxes = false;
-  if (output_attr.n_dims >= 3) {
-    const int last = output_attr.n_dims - 1;
-    if (output_attr.dims[last - 1] == 84) {
-      feature_count = output_attr.dims[last - 1];
-      box_count = output_attr.dims[last];
-    } else if (output_attr.dims[last] == 84) {
-      box_count = output_attr.dims[last - 1];
-      feature_count = output_attr.dims[last];
-    } else if (output_attr.dims[last] == 6) {
-      box_count = output_attr.dims[last - 1];
-      feature_count = output_attr.dims[last];
-      direct_boxes = true;
-    } else if (output_attr.dims[last - 1] == 6) {
-      feature_count = output_attr.dims[last - 1];
-      box_count = output_attr.dims[last];
-      direct_boxes = true;
-    }
-  }
+  const OutputLayout output_layout = ResolveOutputLayout(output_attr);
+  const int feature_count = output_layout.feature_count;
+  const int box_count = output_layout.box_count;
+  const bool direct_boxes = output_layout.direct_boxes;
 
   if (feature_count <= 4 || box_count <= 0) {
-    std::cerr << "unexpected output shape, cannot decode detections" << std::endl;
+    std::cerr << "unexpected output shape, cannot decode detections: "
+              << DimsToString(output_attr) << std::endl;
     return candidates;
   }
 
@@ -346,16 +506,32 @@ std::vector<Detection> YoloRknnDetector::DecodeOutput(const float* data, std::si
 
 std::vector<Detection> YoloRknnDetector::Infer(const cv::Mat& frame, float score_threshold,
                                                float nms_threshold) {
+  return InferProfiled(frame, score_threshold, nms_threshold, nullptr);
+}
+
+std::vector<Detection> YoloRknnDetector::InferProfiled(const cv::Mat& frame,
+                                                       float score_threshold,
+                                                       float nms_threshold,
+                                                       InferProfile* profile) {
   if (!loaded_) {
     return {};
   }
 
+  InferProfile local_profile;
+  InferProfile& p = (profile != nullptr) ? *profile : local_profile;
+  p = InferProfile{};
+  p.zero_copy_input = zero_copy_input_enabled_;
+  const auto total_start = Clock::now();
+
   std::vector<unsigned char> input_u8;
   LetterBoxInfo letterbox;
+  const auto prepare_start = Clock::now();
   if (!PrepareInput(frame, &input_u8, &letterbox)) {
     std::cerr << "failed to prepare input frame" << std::endl;
     return {};
   }
+  const auto prepare_end = Clock::now();
+  p.prepare_ms = ElapsedMs(prepare_start, prepare_end);
 
   rknn_input input = {};
   input.index = 0;
@@ -365,13 +541,26 @@ std::vector<Detection> YoloRknnDetector::Infer(const cv::Mat& frame, float score
   input.size = static_cast<uint32_t>(input_u8.size());
   input.buf = input_u8.data();
 
-  int ret = rknn_inputs_set(ctx_, 1, &input);
+  const auto inputs_set_start = Clock::now();
+  int ret = RKNN_SUCC;
+  if (zero_copy_input_enabled_) {
+    ret = UseZeroCopyInput(input_u8) ? RKNN_SUCC : -1;
+  } else {
+    ret = rknn_inputs_set(ctx_, 1, &input);
+  }
+  const auto inputs_set_end = Clock::now();
+  p.inputs_set_ms = ElapsedMs(inputs_set_start, inputs_set_end);
   if (ret != RKNN_SUCC) {
-    std::cerr << "rknn_inputs_set failed: " << ret << std::endl;
+    std::cerr << (zero_copy_input_enabled_ ? "zero-copy input update failed: "
+                                           : "rknn_inputs_set failed: ")
+              << ret << std::endl;
     return {};
   }
 
+  const auto run_start = Clock::now();
   ret = rknn_run(ctx_, nullptr);
+  const auto run_end = Clock::now();
+  p.run_ms = ElapsedMs(run_start, run_end);
   if (ret != RKNN_SUCC) {
     std::cerr << "rknn_run failed: " << ret << std::endl;
     return {};
@@ -384,7 +573,10 @@ std::vector<Detection> YoloRknnDetector::Infer(const cv::Mat& frame, float score
     outputs[i].is_prealloc = 0;
   }
 
+  const auto outputs_get_start = Clock::now();
   ret = rknn_outputs_get(ctx_, io_num_.n_output, outputs.data(), nullptr);
+  const auto outputs_get_end = Clock::now();
+  p.outputs_get_ms = ElapsedMs(outputs_get_start, outputs_get_end);
   if (ret != RKNN_SUCC) {
     std::cerr << "rknn_outputs_get failed: " << ret << std::endl;
     return {};
@@ -392,6 +584,10 @@ std::vector<Detection> YoloRknnDetector::Infer(const cv::Mat& frame, float score
 
   const float* output_data = static_cast<const float*>(outputs[0].buf);
   const std::size_t output_count = output_attrs_[0].n_elems;
+  const OutputLayout output_layout = ResolveOutputLayout(output_attrs_[0]);
+  if (LayoutDebugEnabled()) {
+    PrintLayoutStats(output_data, output_layout);
+  }
   if (RawScoreDebugEnabled() && output_data != nullptr) {
     float max_score = 0.0f;
     for (std::size_t i = 4; i < output_count; ++i) {
@@ -400,9 +596,17 @@ std::vector<Detection> YoloRknnDetector::Infer(const cv::Mat& frame, float score
     std::cout << "frame max raw score: " << max_score << std::endl;
   }
 
+  const auto decode_start = Clock::now();
   std::vector<Detection> detections =
       DecodeOutput(output_data, output_count, output_attrs_[0], letterbox, score_threshold, nms_threshold);
+  const auto decode_end = Clock::now();
+  p.decode_ms = ElapsedMs(decode_start, decode_end);
 
+  const auto release_start = Clock::now();
   rknn_outputs_release(ctx_, io_num_.n_output, outputs.data());
+  const auto release_end = Clock::now();
+  p.outputs_release_ms = ElapsedMs(release_start, release_end);
+  p.detections = detections.size();
+  p.total_ms = ElapsedMs(total_start, release_end);
   return detections;
 }

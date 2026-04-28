@@ -96,6 +96,30 @@ Drone-model example:
 ./rk_yolo_video input.mp4 output.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 output.csv output.roi.jsonl
 ```
 
+## Profiling And Zero-Copy Experiments
+
+The default path is unchanged. Profiling and zero-copy input are controlled by environment variables and are disabled unless explicitly enabled.
+
+Print per-frame stage timing to stdout:
+
+```bash
+RK_YOLO_PROFILE=1 ./rk_yolo_video input.mp4 output.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 output.csv output.roi.jsonl
+```
+
+The profiling rows are emitted as `profile_csv` lines with fields matching the thesis stage analysis:
+
+```text
+frame,input_mode,prepare_ms,input_set_or_update_ms,rknn_run_ms,outputs_get_ms,decode_nms_ms,outputs_release_ms,render_ms,total_work_ms,detections
+```
+
+Compare the experimental zero-copy input path against the normal `rknn_inputs_set` path:
+
+```bash
+RK_YOLO_PROFILE=1 RK_YOLO_ZERO_COPY_INPUT=1 ./rk_yolo_video input.mp4 output_zero_copy.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 zero_copy.csv zero_copy.roi.jsonl
+```
+
+If zero-copy setup fails, the tool prints the failure reason and falls back to the normal input path. Keep `RK_YOLO_ZERO_COPY_INPUT=0` for stable demonstrations unless a board-side comparison shows a benefit.
+
 The CSV file records one line per detection:
 
 ```text

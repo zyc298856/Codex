@@ -32,6 +32,11 @@ const char* const kCocoClassNames[80] = {
 constexpr float kDefaultScoreThreshold = 0.30f;
 constexpr float kDefaultNmsThreshold = 0.45f;
 
+bool EnvFlagEnabled(const char* name) {
+  const char* value = std::getenv(name);
+  return value != nullptr && value[0] != '\0' && value[0] != '0';
+}
+
 void PrintUsage(const char* argv0) {
   std::cout << "Usage: " << argv0
             << " <input_video> <output_video> [model_path=<auto>] [score_thresh=0.30] "
@@ -39,16 +44,20 @@ void PrintUsage(const char* argv0) {
             << std::endl;
 }
 
-const char* ClassName(int class_id) {
+const char* ClassName(int class_id, int model_class_count) {
+  if (model_class_count == 1 && class_id == 0) {
+    return "drone";
+  }
   if (class_id >= 0 && class_id < 80) {
     return kCocoClassNames[class_id];
   }
   return "unknown";
 }
 
-std::string BuildLabel(const Detection& det) {
+std::string BuildLabel(const Detection& det, int model_class_count) {
   std::ostringstream oss;
-  oss << ClassName(det.class_id) << " " << std::fixed << std::setprecision(2) << det.score;
+  oss << ClassName(det.class_id, model_class_count) << " " << std::fixed << std::setprecision(2)
+      << det.score;
   return oss.str();
 }
 
@@ -76,12 +85,12 @@ std::string ResolveModelPath(int argc, char** argv) {
   return "../../yolov10n.rknn";
 }
 
-void DrawDetections(cv::Mat* frame, const std::vector<Detection>& detections) {
+void DrawDetections(cv::Mat* frame, const std::vector<Detection>& detections, int model_class_count) {
   for (const Detection& det : detections) {
     const cv::Scalar color = cv::Scalar(0, 255, 0);
     cv::rectangle(*frame, det.box, color, 2);
 
-    const std::string label = BuildLabel(det);
+    const std::string label = BuildLabel(det, model_class_count);
     int baseline = 0;
     const cv::Size label_size =
         cv::getTextSize(label, cv::FONT_HERSHEY_SIMPLEX, 0.5, 1, &baseline);
@@ -98,12 +107,31 @@ void DrawDetections(cv::Mat* frame, const std::vector<Detection>& detections) {
 }
 
 void WriteDetectionRows(std::ofstream* csv_file, int frame_index,
-                        const std::vector<Detection>& detections) {
+                        const std::vector<Detection>& detections, int model_class_count) {
   for (const Detection& det : detections) {
-    *csv_file << frame_index << "," << det.class_id << "," << ClassName(det.class_id) << ","
-              << std::fixed << std::setprecision(4) << det.score << "," << det.box.x << ","
-              << det.box.y << "," << det.box.width << "," << det.box.height << "\n";
+    *csv_file << frame_index << "," << det.class_id << ","
+              << ClassName(det.class_id, model_class_count) << "," << std::fixed
+              << std::setprecision(4) << det.score << "," << det.box.x << "," << det.box.y
+              << "," << det.box.width << "," << det.box.height << "\n";
   }
+}
+
+void PrintProfileHeader() {
+  std::cout
+      << "profile_csv_header,frame,input_mode,prepare_ms,input_set_or_update_ms,rknn_run_ms,"
+         "outputs_get_ms,decode_nms_ms,outputs_release_ms,render_ms,total_work_ms,detections"
+      << std::endl;
+}
+
+void PrintProfileRow(int frame_index, const InferProfile& profile, double render_ms) {
+  const double total_work_ms = profile.total_ms + render_ms;
+  std::cout << "profile_csv," << frame_index << ","
+            << (profile.zero_copy_input ? "zero_copy" : "rknn_inputs_set") << ","
+            << std::fixed << std::setprecision(2) << profile.prepare_ms << ","
+            << profile.inputs_set_ms << "," << profile.run_ms << ","
+            << profile.outputs_get_ms << "," << profile.decode_ms << ","
+            << profile.outputs_release_ms << "," << render_ms << ","
+            << total_work_ms << "," << profile.detections << std::endl;
 }
 
 }  // namespace
@@ -124,12 +152,14 @@ int main(int argc, char** argv) {
   const std::string detections_csv =
       (argc >= 7) ? argv[6] : (output_video + ".detections.csv");
   const std::string roi_jsonl = (argc >= 8) ? argv[7] : (output_video + ".roi.jsonl");
+  const bool profile_enabled = EnvFlagEnabled("RK_YOLO_PROFILE");
 
   YoloRknnDetector detector;
   if (!detector.Load(model_path)) {
     std::cerr << "failed to load model: " << model_path << std::endl;
     return 2;
   }
+  const int model_class_count = detector.class_count();
 
   cv::VideoCapture cap(input_video);
   if (!cap.isOpened()) {
@@ -169,6 +199,12 @@ int main(int argc, char** argv) {
   std::cout << "score threshold=" << score_threshold << ", nms threshold=" << nms_threshold << std::endl;
   std::cout << "detections csv=" << detections_csv << std::endl;
   std::cout << "roi jsonl=" << roi_jsonl << std::endl;
+  std::cout << "profile=" << (profile_enabled ? "on" : "off")
+            << ", zero_copy_input=" << (detector.zero_copy_input_enabled() ? "on" : "off")
+            << std::endl;
+  if (profile_enabled) {
+    PrintProfileHeader();
+  }
 
   int frame_index = 0;
   int detected_frames = 0;
@@ -178,7 +214,10 @@ int main(int argc, char** argv) {
   cv::Mat frame;
   while (cap.read(frame)) {
     const auto start = std::chrono::steady_clock::now();
-    std::vector<Detection> detections = detector.Infer(frame, score_threshold, nms_threshold);
+    InferProfile profile;
+    std::vector<Detection> detections =
+        profile_enabled ? detector.InferProfiled(frame, score_threshold, nms_threshold, &profile)
+                        : detector.Infer(frame, score_threshold, nms_threshold);
     const auto end = std::chrono::steady_clock::now();
     const double infer_ms =
         std::chrono::duration<double, std::milli>(end - start).count();
@@ -189,14 +228,22 @@ int main(int argc, char** argv) {
     }
     total_detections += static_cast<int>(detections.size());
 
-    DrawDetections(&frame, detections);
-    WriteDetectionRows(&csv_file, frame_index + 1, detections);
+    const auto render_start = std::chrono::steady_clock::now();
+    DrawDetections(&frame, detections, model_class_count);
+    WriteDetectionRows(&csv_file, frame_index + 1, detections, model_class_count);
     roi_file << BuildLegacyRoiJson(detections) << "\n";
     writer.write(frame);
+    const auto render_end = std::chrono::steady_clock::now();
+    const double render_ms =
+        std::chrono::duration<double, std::milli>(render_end - render_start).count();
 
     ++frame_index;
-    std::cout << "frame=" << frame_index << " detections=" << detections.size()
-              << " infer_ms=" << std::fixed << std::setprecision(2) << infer_ms << std::endl;
+    if (profile_enabled) {
+      PrintProfileRow(frame_index, profile, render_ms);
+    } else {
+      std::cout << "frame=" << frame_index << " detections=" << detections.size()
+                << " infer_ms=" << std::fixed << std::setprecision(2) << infer_ms << std::endl;
+    }
   }
 
   const double avg_ms = (frame_index > 0) ? (total_ms / frame_index) : 0.0;
