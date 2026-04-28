@@ -105,6 +105,11 @@ bool ZeroCopyInputEnabled() {
   return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
 }
 
+bool RgaLetterboxEnabled() {
+  const char* env_value = std::getenv("RK_YOLO_RGA_LETTERBOX");
+  return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
+}
+
 std::string RgaPreprocessMode() {
   const char* env_value = std::getenv("RK_YOLO_PREPROCESS");
   if (env_value == nullptr || env_value[0] == '\0') {
@@ -210,6 +215,7 @@ YoloRknnDetector::YoloRknnDetector()
       zero_copy_input_enabled_(false),
       rga_preprocess_enabled_(false),
       rga_cvt_resize_enabled_(false),
+      rga_letterbox_enabled_(false),
       zero_copy_input_mem_(nullptr),
       zero_copy_input_attr_{},
       loaded_(false) {}
@@ -281,6 +287,7 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
   const std::string preprocess_mode = RgaPreprocessMode();
   rga_preprocess_enabled_ = (preprocess_mode == "rga");
   rga_cvt_resize_enabled_ = (preprocess_mode == "rga_cvt_resize");
+  rga_letterbox_enabled_ = RgaLetterboxEnabled();
 #ifdef HAVE_RGA
   if (rga_cvt_resize_enabled_) {
     std::cout << "preprocess=rga_cvt_resize" << std::endl;
@@ -288,14 +295,17 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
     std::cout << "preprocess=" << (rga_preprocess_enabled_ ? "rga_resize" : "opencv")
               << std::endl;
   }
+  std::cout << "rga_letterbox=" << (rga_letterbox_enabled_ ? "on" : "off") << std::endl;
 #else
-  if (rga_preprocess_enabled_ || rga_cvt_resize_enabled_) {
+  if (rga_preprocess_enabled_ || rga_cvt_resize_enabled_ || rga_letterbox_enabled_) {
     std::cout << "preprocess=rga_requested_but_unavailable_fallback_opencv" << std::endl;
     rga_preprocess_enabled_ = false;
     rga_cvt_resize_enabled_ = false;
+    rga_letterbox_enabled_ = false;
   } else {
     std::cout << "preprocess=opencv" << std::endl;
   }
+  std::cout << "rga_letterbox=off" << std::endl;
 #endif
 
   if (ZeroCopyInputEnabled()) {
@@ -329,6 +339,7 @@ void YoloRknnDetector::Release() {
   zero_copy_input_enabled_ = false;
   rga_preprocess_enabled_ = false;
   rga_cvt_resize_enabled_ = false;
+  rga_letterbox_enabled_ = false;
   zero_copy_input_attr_ = {};
   loaded_ = false;
 }
@@ -354,6 +365,11 @@ bool YoloRknnDetector::PrepareInput(const cv::Mat& frame, std::vector<unsigned c
   letterbox->scale = scale;
   letterbox->pad_x = static_cast<float>(pad_left);
   letterbox->pad_y = static_cast<float>(pad_top);
+
+  if (rga_letterbox_enabled_ &&
+      PrepareLetterboxWithRga(frame, input_u8, resized_w, resized_h, pad_left, pad_top)) {
+    return true;
+  }
 
   cv::Mat resized;
   bool prepared_with_rga = false;
@@ -481,6 +497,59 @@ bool YoloRknnDetector::ResizeBgrToRgbWithRga(const cv::Mat& bgr, cv::Mat* resize
     }
     return false;
   }
+  return true;
+#endif
+}
+
+bool YoloRknnDetector::PrepareLetterboxWithRga(const cv::Mat& bgr,
+                                               std::vector<unsigned char>* input_u8,
+                                               int resized_w, int resized_h,
+                                               int pad_left, int pad_top) const {
+#ifndef HAVE_RGA
+  (void)bgr;
+  (void)input_u8;
+  (void)resized_w;
+  (void)resized_h;
+  (void)pad_left;
+  (void)pad_top;
+  return false;
+#else
+  static bool warned = false;
+  if (bgr.empty() || input_u8 == nullptr || model_width_ <= 0 || model_height_ <= 0 ||
+      resized_w <= 0 || resized_h <= 0 || bgr.type() != CV_8UC3) {
+    if (!warned) {
+      std::cerr << "RGA letterbox skipped: invalid BGR input" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  const cv::Mat bgr_contiguous = bgr.isContinuous() ? bgr : bgr.clone();
+  cv::Mat padded(model_height_, model_width_, CV_8UC3, cv::Scalar(114, 114, 114));
+  if (!padded.isContinuous()) {
+    padded = padded.clone();
+  }
+
+  rga_buffer_t src = wrapbuffer_virtualaddr(const_cast<unsigned char*>(bgr_contiguous.data),
+                                            bgr_contiguous.cols, bgr_contiguous.rows,
+                                            RK_FORMAT_BGR_888);
+  rga_buffer_t dst = wrapbuffer_virtualaddr(padded.data, model_width_, model_height_,
+                                            RK_FORMAT_RGB_888);
+  im_rect src_rect{0, 0, bgr_contiguous.cols, bgr_contiguous.rows};
+  im_rect dst_rect{pad_left, pad_top, resized_w, resized_h};
+
+  IM_STATUS status =
+      improcess(src, dst, {}, src_rect, dst_rect, {}, -1, nullptr, nullptr, IM_SYNC);
+  if (status != IM_STATUS_SUCCESS) {
+    if (!warned) {
+      std::cerr << "RGA letterbox improcess failed: " << imStrError(status)
+                << "; fallback to existing preprocess path" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  input_u8->assign(padded.data, padded.data + padded.total() * padded.elemSize());
   return true;
 #endif
 }

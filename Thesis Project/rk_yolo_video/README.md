@@ -156,6 +156,16 @@ Enable the second-stage RGA color-convert plus resize experiment:
 RK_YOLO_PROFILE=1 RK_YOLO_PREPROCESS=rga_cvt_resize ./rk_yolo_video input.mp4 output_rga_cvt_resize.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 rga_cvt_resize.csv rga_cvt_resize.roi.jsonl
 ```
 
+Enable the optional RGA letterbox experiment:
+
+```bash
+RK_YOLO_PROFILE=1 RK_YOLO_PREPROCESS=rga_cvt_resize RK_YOLO_RGA_LETTERBOX=1 ./rk_yolo_video input.mp4 output_rga_letterbox.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 rga_letterbox.csv rga_letterbox.roi.jsonl
+```
+
+This path keeps the stable RKNN input upload and post-processing logic, but lets RGA write the
+resized RGB image directly into the letterbox canvas. It is disabled by default and falls back to
+the existing preprocessing path if RGA rejects the operation.
+
 Compare against the stable OpenCV path:
 
 ```bash
