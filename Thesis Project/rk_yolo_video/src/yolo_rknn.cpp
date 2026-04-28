@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -104,15 +105,26 @@ bool ZeroCopyInputEnabled() {
   return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
 }
 
-bool RgaPreprocessRequested() {
+std::string RgaPreprocessMode() {
   const char* env_value = std::getenv("RK_YOLO_PREPROCESS");
-  if (env_value != nullptr) {
-    const std::string value(env_value);
-    return value == "rga" || value == "RGA";
+  if (env_value == nullptr || env_value[0] == '\0') {
+    env_value = std::getenv("RK_YOLO_USE_RGA");
+    if (env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0') {
+      return "rga";
+    }
+    return "opencv";
   }
 
-  env_value = std::getenv("RK_YOLO_USE_RGA");
-  return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
+  std::string value(env_value);
+  std::transform(value.begin(), value.end(), value.begin(),
+                 [](unsigned char ch) { return static_cast<char>(std::tolower(ch)); });
+  if (value == "rga_cvt_resize" || value == "rga-cvt-resize" || value == "rga2") {
+    return "rga_cvt_resize";
+  }
+  if (value == "rga" || value == "rga_resize" || value == "rga-resize") {
+    return "rga";
+  }
+  return "opencv";
 }
 
 bool LooksLikeFeatureAxis(int dim) {
@@ -197,6 +209,7 @@ YoloRknnDetector::YoloRknnDetector()
       class_count_(0),
       zero_copy_input_enabled_(false),
       rga_preprocess_enabled_(false),
+      rga_cvt_resize_enabled_(false),
       zero_copy_input_mem_(nullptr),
       zero_copy_input_attr_{},
       loaded_(false) {}
@@ -265,14 +278,21 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
   class_count_ = output_layout.direct_boxes ? 0 : std::max(0, output_layout.feature_count - 4);
   std::cout << "resolved model classes: " << class_count_ << std::endl;
 
-  rga_preprocess_enabled_ = RgaPreprocessRequested();
+  const std::string preprocess_mode = RgaPreprocessMode();
+  rga_preprocess_enabled_ = (preprocess_mode == "rga");
+  rga_cvt_resize_enabled_ = (preprocess_mode == "rga_cvt_resize");
 #ifdef HAVE_RGA
-  std::cout << "preprocess=" << (rga_preprocess_enabled_ ? "rga_resize" : "opencv")
-            << std::endl;
+  if (rga_cvt_resize_enabled_) {
+    std::cout << "preprocess=rga_cvt_resize" << std::endl;
+  } else {
+    std::cout << "preprocess=" << (rga_preprocess_enabled_ ? "rga_resize" : "opencv")
+              << std::endl;
+  }
 #else
-  if (rga_preprocess_enabled_) {
+  if (rga_preprocess_enabled_ || rga_cvt_resize_enabled_) {
     std::cout << "preprocess=rga_requested_but_unavailable_fallback_opencv" << std::endl;
     rga_preprocess_enabled_ = false;
+    rga_cvt_resize_enabled_ = false;
   } else {
     std::cout << "preprocess=opencv" << std::endl;
   }
@@ -308,6 +328,7 @@ void YoloRknnDetector::Release() {
   class_count_ = 0;
   zero_copy_input_enabled_ = false;
   rga_preprocess_enabled_ = false;
+  rga_cvt_resize_enabled_ = false;
   zero_copy_input_attr_ = {};
   loaded_ = false;
 }
@@ -334,16 +355,21 @@ bool YoloRknnDetector::PrepareInput(const cv::Mat& frame, std::vector<unsigned c
   letterbox->pad_x = static_cast<float>(pad_left);
   letterbox->pad_y = static_cast<float>(pad_top);
 
-  cv::Mat rgb;
-  cv::cvtColor(frame, rgb, cv::COLOR_BGR2RGB);
-
   cv::Mat resized;
-  bool resized_with_rga = false;
-  if (rga_preprocess_enabled_) {
-    resized_with_rga = ResizeRgbWithRga(rgb, &resized, resized_w, resized_h);
+  bool prepared_with_rga = false;
+  if (rga_cvt_resize_enabled_) {
+    prepared_with_rga = ResizeBgrToRgbWithRga(frame, &resized, resized_w, resized_h);
   }
-  if (!resized_with_rga) {
-    cv::resize(rgb, resized, cv::Size(resized_w, resized_h), 0.0, 0.0, cv::INTER_LINEAR);
+
+  if (!prepared_with_rga) {
+    cv::Mat rgb;
+    cv::cvtColor(frame, rgb, cv::COLOR_BGR2RGB);
+    if (rga_preprocess_enabled_) {
+      prepared_with_rga = ResizeRgbWithRga(rgb, &resized, resized_w, resized_h);
+    }
+    if (!prepared_with_rga) {
+      cv::resize(rgb, resized, cv::Size(resized_w, resized_h), 0.0, 0.0, cv::INTER_LINEAR);
+    }
   }
 
   cv::Mat padded;
@@ -398,6 +424,59 @@ bool YoloRknnDetector::ResizeRgbWithRga(const cv::Mat& rgb, cv::Mat* resized, in
     if (!warned) {
       std::cerr << "RGA imresize failed: " << imStrError(status)
                 << "; fallback to OpenCV resize" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+  return true;
+#endif
+}
+
+bool YoloRknnDetector::ResizeBgrToRgbWithRga(const cv::Mat& bgr, cv::Mat* resized_rgb,
+                                             int width, int height) const {
+#ifndef HAVE_RGA
+  (void)bgr;
+  (void)resized_rgb;
+  (void)width;
+  (void)height;
+  return false;
+#else
+  static bool warned = false;
+  if (bgr.empty() || resized_rgb == nullptr || width <= 0 || height <= 0 ||
+      bgr.type() != CV_8UC3) {
+    if (!warned) {
+      std::cerr << "RGA cvt+resize skipped: invalid BGR input" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  const cv::Mat bgr_contiguous = bgr.isContinuous() ? bgr : bgr.clone();
+  resized_rgb->create(height, width, CV_8UC3);
+  if (!resized_rgb->isContinuous()) {
+    *resized_rgb = resized_rgb->clone();
+  }
+
+  rga_buffer_t src = wrapbuffer_virtualaddr(const_cast<unsigned char*>(bgr_contiguous.data),
+                                            bgr_contiguous.cols, bgr_contiguous.rows,
+                                            RK_FORMAT_BGR_888);
+  rga_buffer_t dst = wrapbuffer_virtualaddr(resized_rgb->data, width, height, RK_FORMAT_RGB_888);
+
+  IM_STATUS status = imcheck(src, dst, {}, {});
+  if (status != IM_STATUS_NOERROR) {
+    if (!warned) {
+      std::cerr << "RGA cvt+resize imcheck failed: " << imStrError(status)
+                << "; fallback to OpenCV preprocess" << std::endl;
+      warned = true;
+    }
+    return false;
+  }
+
+  status = imresize(src, dst);
+  if (status != IM_STATUS_SUCCESS) {
+    if (!warned) {
+      std::cerr << "RGA cvt+resize imresize failed: " << imStrError(status)
+                << "; fallback to OpenCV preprocess" << std::endl;
       warned = true;
     }
     return false;

@@ -41,6 +41,7 @@ class YoloRknnDetector {
   int class_count() const { return class_count_; }
   bool zero_copy_input_enabled() const { return zero_copy_input_enabled_; }
   bool rga_preprocess_enabled() const { return rga_preprocess_enabled_; }
+  bool rga_cvt_resize_enabled() const { return rga_cvt_resize_enabled_; }
   bool loaded() const { return loaded_; }
 
  private:
@@ -55,6 +56,8 @@ class YoloRknnDetector {
   bool PrepareInput(const cv::Mat& frame, std::vector<unsigned char>* input_u8,
                     LetterBoxInfo* letterbox) const;
   bool ResizeRgbWithRga(const cv::Mat& rgb, cv::Mat* resized, int width, int height) const;
+  bool ResizeBgrToRgbWithRga(const cv::Mat& bgr, cv::Mat* resized_rgb, int width,
+                             int height) const;
   bool InitZeroCopyInput();
   bool UseZeroCopyInput(const std::vector<unsigned char>& input_u8);
   std::vector<Detection> DecodeOutput(const float* data, std::size_t element_count,
@@ -73,6 +76,7 @@ class YoloRknnDetector {
   int class_count_;
   bool zero_copy_input_enabled_;
   bool rga_preprocess_enabled_;
+  bool rga_cvt_resize_enabled_;
   rknn_tensor_mem* zero_copy_input_mem_;
   rknn_tensor_attr zero_copy_input_attr_;
   bool loaded_;

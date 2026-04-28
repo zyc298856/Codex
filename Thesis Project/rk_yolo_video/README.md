@@ -141,13 +141,19 @@ If zero-copy setup fails, the tool prints the failure reason and falls back to t
 ## Optional RGA Preprocess Experiment
 
 The stable default preprocessing path remains OpenCV. For board-side hardware-preprocess experiments,
-`rk_yolo_video` can optionally use RK3588 RGA for the resize step while keeping color conversion,
-letterbox padding, RKNN input upload, and post-processing unchanged.
+`rk_yolo_video` can optionally use RK3588 RGA in two non-default modes while keeping letterbox
+padding, RKNN input upload, and post-processing unchanged.
 
-Enable the experimental RGA resize path:
+Enable the first-stage RGA resize path:
 
 ```bash
 RK_YOLO_PROFILE=1 RK_YOLO_PREPROCESS=rga ./rk_yolo_video input.mp4 output_rga.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 rga.csv rga.roi.jsonl
+```
+
+Enable the second-stage RGA color-convert plus resize experiment:
+
+```bash
+RK_YOLO_PROFILE=1 RK_YOLO_PREPROCESS=rga_cvt_resize ./rk_yolo_video input.mp4 output_rga_cvt_resize.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 rga_cvt_resize.csv rga_cvt_resize.roi.jsonl
 ```
 
 Compare against the stable OpenCV path:
@@ -156,9 +162,9 @@ Compare against the stable OpenCV path:
 RK_YOLO_PROFILE=1 RK_YOLO_PREPROCESS=opencv ./rk_yolo_video input.mp4 output_opencv.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 opencv.csv opencv.roi.jsonl
 ```
 
-The RGA path requires `librga-dev` on the board. If RGA is not available, or if the resize call fails,
-the program prints a warning and falls back to OpenCV resize. This keeps demonstrations and existing
-validation runs compatible with the known-good baseline.
+The RGA paths require `librga-dev` on the board. If RGA is not available, or if a specific RGA
+operation fails, the program prints a warning and falls back to the stable OpenCV preprocessing path.
+This keeps demonstrations and existing validation runs compatible with the known-good baseline.
 
 The CSV file records one line per detection:
 
