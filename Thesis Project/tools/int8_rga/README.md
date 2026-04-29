@@ -27,6 +27,20 @@ python tools/int8_rga/make_calibration_list.py `
 
 Use representative images. For this project, start with 100 to 300 images from the single-class drone dataset, then increase only if INT8 accuracy is unstable.
 
+If RKNN Toolkit2 runs in WSL and the project path contains spaces, create a no-space symlink and keep symlink paths in the calibration file:
+
+```bash
+ln -sfn "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project" /tmp/thesis_project
+cd /tmp/thesis_project
+python tools/int8_rga/make_calibration_list.py \
+  --dataset-yaml datasets/drone_single_class/dataset.yaml \
+  --split train \
+  --limit 200 \
+  --preserve-symlinks \
+  --rewrite-prefix "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project=/tmp/thesis_project" \
+  --output training_runs/drone_gpu_50e/calibration/drone_calib_200_wsl_nospace.txt
+```
+
 ### 2. Convert ONNX to RKNN
 
 FP model:

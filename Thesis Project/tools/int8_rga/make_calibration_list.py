@@ -37,6 +37,18 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         help="Write paths relative to this directory. Default writes absolute paths.",
     )
+    parser.add_argument(
+        "--preserve-symlinks",
+        action="store_true",
+        help="Use absolute paths without resolving symlinks. Useful when RKNN Toolkit2 cannot parse paths containing spaces.",
+    )
+    parser.add_argument(
+        "--rewrite-prefix",
+        action="append",
+        default=[],
+        metavar="FROM=TO",
+        help="Rewrite an output path prefix. Can be repeated. Useful for replacing a path with spaces by a no-space symlink.",
+    )
     return parser
 
 
@@ -98,14 +110,40 @@ def dataset_paths(dataset_yaml: Path, splits: List[str]) -> List[Path]:
     return paths
 
 
-def normalize_output_path(path: Path, relative_to: Optional[Path]) -> str:
-    resolved = path.resolve()
+def parse_rewrite_rules(rules: List[str]) -> List[tuple[str, str]]:
+    parsed: List[tuple[str, str]] = []
+    for rule in rules:
+        if "=" not in rule:
+            raise ValueError(f"invalid --rewrite-prefix rule, expected FROM=TO: {rule}")
+        source, target = rule.split("=", 1)
+        parsed.append((source.rstrip("/\\"), target.rstrip("/\\")))
+    return parsed
+
+
+def apply_rewrite_rules(text: str, rules: List[tuple[str, str]]) -> str:
+    normalized = text.replace("\\", "/")
+    for source, target in rules:
+        source_norm = source.replace("\\", "/")
+        target_norm = target.replace("\\", "/")
+        if normalized.startswith(source_norm + "/") or normalized == source_norm:
+            return target_norm + normalized[len(source_norm) :]
+    return normalized
+
+
+def normalize_output_path(
+    path: Path,
+    relative_to: Optional[Path],
+    preserve_symlinks: bool,
+    rewrite_rules: List[tuple[str, str]],
+) -> str:
+    resolved = path.absolute() if preserve_symlinks else path.resolve()
     if relative_to is not None:
         try:
-            return resolved.relative_to(relative_to.resolve()).as_posix()
+            base = relative_to.absolute() if preserve_symlinks else relative_to.resolve()
+            return apply_rewrite_rules(resolved.relative_to(base).as_posix(), rewrite_rules)
         except ValueError:
-            return resolved.as_posix()
-    return resolved.as_posix()
+            return apply_rewrite_rules(resolved.as_posix(), rewrite_rules)
+    return apply_rewrite_rules(resolved.as_posix(), rewrite_rules)
 
 
 def main() -> int:
@@ -130,17 +168,26 @@ def main() -> int:
     for source in sources:
         images.extend(collect_from_path(source))
 
-    unique_images = sorted({image.resolve() for image in images})
+    unique_images = sorted(
+        {image.absolute() if args.preserve_symlinks else image.resolve() for image in images}
+    )
     if not unique_images:
         raise RuntimeError(f"no images found from sources: {sources}")
 
     rng = random.Random(args.seed)
     rng.shuffle(unique_images)
     selected = unique_images[: args.limit]
+    rewrite_rules = parse_rewrite_rules(args.rewrite_prefix)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
-        "\n".join(normalize_output_path(image, args.relative_to) for image in selected) + "\n",
+        "\n".join(
+            normalize_output_path(
+                image, args.relative_to, args.preserve_symlinks, rewrite_rules
+            )
+            for image in selected
+        )
+        + "\n",
         encoding="utf-8",
     )
     print(f"sources={len(sources)}")
