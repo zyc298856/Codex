@@ -334,3 +334,53 @@ Local S-3 evidence files:
 - `eval_runs/int8_rga/rk3588_board_20260429_taskbook_full_rga_fig1/full_rga_s3_detections.csv`
 - `eval_runs/int8_rga/rk3588_board_20260429_taskbook_full_rga_fig1/full_rga_s3_alarm.csv`
 - `eval_runs/int8_rga/rk3588_board_20260429_taskbook_full_rga_fig1/full_rga_s3_roi.jsonl`
+
+## Follow-up: task-book INT8 validation
+
+To make the INT8 line closer to the task-book requirement, a reproducible board-side INT8 comparison script was added:
+
+- `rk_yolo_video/scripts/run_taskbook_int8_eval.sh`
+
+The script compares three fixed-video cases under the same input video, score threshold, NMS threshold, and profiling mode:
+
+1. `fp_baseline`: stable FP RKNN model.
+2. `int8_full`: fully quantized INT8 RKNN model.
+3. `int8_hybrid_head230`: manual hybrid INT8 RKNN model that keeps the sensitive output-head range in higher precision.
+
+Board-side command used for validation:
+
+```bash
+cd /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video
+scripts/run_taskbook_int8_eval.sh \
+  /home/ubuntu/public_videos/anti_uav_fig1.mp4 \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.fp.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.hybrid_head230.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_int8_script_20260429_fig1
+```
+
+Fixed-video validation result on `anti_uav_fig1.mp4`:
+
+| Case | Frames | Frames with detections | Total detections | Alarm events | Avg infer ms | Mean input/update ms | Mean RKNN run ms | Mean total work ms |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| FP baseline | 130 | 30 | 30 | 14 | 103.82 | 43.921 | 49.001 | 139.969 |
+| Full INT8 | 130 | 0 | 0 | 0 | 38.93 | 0.440 | 29.922 | 68.740 |
+| Hybrid INT8 head230 | 130 | 23 | 23 | 16 | 43.29 | 0.442 | 33.194 | 77.250 |
+
+Interpretation:
+
+- Full INT8 shows the expected runtime benefit, but the detection confidence collapses on this fixed video, producing zero detections. It should not be promoted as the stable deployment path.
+- Manual hybrid INT8 restores most of the FP detection behavior in this short validation clip: 23 detection frames versus 30 for FP, while keeping a much lower average inference time than FP.
+- The current best thesis wording is that INT8 quantization conversion, calibration, and board-side validation have been completed, and that manual hybrid quantization is an effective mitigation for the observed full-INT8 accuracy collapse. However, FP RKNN remains the final stable demonstration path because it preserves the best detection consistency.
+
+Local INT8 evidence directory:
+
+- `eval_runs/int8_rga/rk3588_board_20260429_taskbook_int8_fig1`
+
+Key evidence files:
+
+- `taskbook_int8_summary.csv`
+- `fp_baseline.log`
+- `int8_full.log`
+- `int8_hybrid_head230.log`
+- corresponding detection, ROI, and alarm CSV/JSONL files for all three cases

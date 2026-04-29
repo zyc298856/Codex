@@ -64,6 +64,22 @@ python tools/int8_rga/convert_onnx_to_rknn.py `
 
 The script requires RKNN Toolkit2 in the active Python environment. Use `--dry-run` to validate arguments without importing RKNN Toolkit2.
 
+### Task-book INT8 board validation
+
+For the final thesis evidence chain, the preferred board-side entry is:
+
+```bash
+cd /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video
+scripts/run_taskbook_int8_eval.sh \
+  /home/ubuntu/public_videos/anti_uav_fig1.mp4 \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.fp.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.hybrid_head230.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_int8_eval
+```
+
+This compares the stable FP model, the fully quantized INT8 model, and the manual hybrid INT8 model on the same fixed video. The expected interpretation is conservative: INT8 is considered validated as a quantization and board-side experiment, but it should only replace FP after detection consistency is comparable to the FP baseline.
+
 ### 3. Generate board-side command matrix
 
 ```powershell

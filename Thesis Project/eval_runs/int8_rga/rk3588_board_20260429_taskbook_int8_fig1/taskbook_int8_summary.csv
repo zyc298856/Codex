@@ -1,0 +1,4 @@
+case,frames,frames_with_detections,total_detections,alarm_events,avg_infer_ms,mean_prepare_ms,mean_input_update_ms,mean_rknn_run_ms,mean_outputs_get_ms,mean_decode_ms,mean_render_ms,mean_total_work_ms
+fp_baseline,130,30,30,14,103.82,4.713,43.921,49.001,0.726,3.755,37.832,139.969
+int8_full,130,0,0,0,38.93,4.256,0.440,29.922,0.145,2.883,31.078,68.740
+int8_hybrid_head230,130,23,23,16,43.29,4.290,0.442,33.194,0.571,3.312,35.422,77.250
