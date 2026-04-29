@@ -77,6 +77,21 @@ python tools/int8_rga/make_board_experiment_commands.py `
 
 Copy the generated commands to RK3588 and run them in the directory containing `rk_yolo_video`.
 
+For real board-side execution, the one-click script is usually easier:
+
+```bash
+chmod +x tools/int8_rga/run_int8_rga_experiments.sh
+
+tools/int8_rga/run_int8_rga_experiments.sh \
+  --video /home/ubuntu/eval/public_uav.mp4 \
+  --fp-model /home/ubuntu/models/best.end2end_false.op12.rk3588.fp.v220.rknn \
+  --int8-model /home/ubuntu/models/best.end2end_false.op12.rk3588.int8.v220.rknn \
+  --binary ./rk_yolo_video \
+  --out-dir /home/ubuntu/eval/int8_rga_runs
+```
+
+Use `--dry-run` first if you only want to inspect the generated commands.
+
 ### 4. Summarize profiling logs
 
 ```powershell
