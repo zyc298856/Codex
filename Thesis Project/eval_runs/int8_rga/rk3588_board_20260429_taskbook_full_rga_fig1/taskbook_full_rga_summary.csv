@@ -1,0 +1,2 @@
+case,frames,detections,mean_prepare_ms,mean_input_update_ms,mean_rknn_run_ms,mean_outputs_get_ms,mean_decode_ms,mean_render_ms,mean_total_work_ms,done_line
+taskbook_full_rga_staged,130,30,9.002,81.936,51.328,0.960,4.990,41.889,190.133,"done. frames=130, frames_with_detections=30, total_detections=30, alarm_events=14, avg_infer_ms=148.25"

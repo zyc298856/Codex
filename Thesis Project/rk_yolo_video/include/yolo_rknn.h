@@ -27,10 +27,26 @@ struct InferProfile {
 
 class YoloRknnDetector {
  public:
+  struct LetterBoxInfo {
+    float scale = 1.0f;
+    float pad_x = 0.0f;
+    float pad_y = 0.0f;
+    int src_width = 0;
+    int src_height = 0;
+  };
+
+  struct PreparedInput {
+    std::vector<unsigned char> input_u8;
+    LetterBoxInfo letterbox;
+  };
+
   YoloRknnDetector();
   ~YoloRknnDetector();
 
   bool Load(const std::string& model_path);
+  bool PrepareFrame(const cv::Mat& frame, PreparedInput* prepared, InferProfile* profile);
+  std::vector<Detection> InferPrepared(const PreparedInput& prepared, float score_threshold,
+                                       float nms_threshold, InferProfile* profile);
   std::vector<Detection> Infer(const cv::Mat& frame, float score_threshold, float nms_threshold);
   std::vector<Detection> InferProfiled(const cv::Mat& frame, float score_threshold,
                                        float nms_threshold, InferProfile* profile);
@@ -43,17 +59,10 @@ class YoloRknnDetector {
   bool rga_preprocess_enabled() const { return rga_preprocess_enabled_; }
   bool rga_cvt_resize_enabled() const { return rga_cvt_resize_enabled_; }
   bool rga_letterbox_enabled() const { return rga_letterbox_enabled_; }
+  bool rga_required() const { return rga_required_; }
   bool loaded() const { return loaded_; }
 
  private:
-  struct LetterBoxInfo {
-    float scale = 1.0f;
-    float pad_x = 0.0f;
-    float pad_y = 0.0f;
-    int src_width = 0;
-    int src_height = 0;
-  };
-
   bool PrepareInput(const cv::Mat& frame, std::vector<unsigned char>* input_u8,
                     LetterBoxInfo* letterbox) const;
   bool ResizeRgbWithRga(const cv::Mat& rgb, cv::Mat* resized, int width, int height) const;
@@ -82,6 +91,7 @@ class YoloRknnDetector {
   bool rga_preprocess_enabled_;
   bool rga_cvt_resize_enabled_;
   bool rga_letterbox_enabled_;
+  bool rga_required_;
   rknn_tensor_mem* zero_copy_input_mem_;
   rknn_tensor_attr zero_copy_input_attr_;
   bool loaded_;

@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(OpenCV REQUIRED)
+find_package(Threads REQUIRED)
 find_package(PkgConfig QUIET)
 
 if(PkgConfig_FOUND)
@@ -62,6 +63,7 @@ target_link_libraries(
   PRIVATE
     ${OpenCV_LIBS}
     ${RKNN_LIBRARY}
+    Threads::Threads
 )
 
 if(RGA_FOUND)

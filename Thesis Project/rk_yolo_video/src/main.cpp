@@ -5,13 +5,17 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <mutex>
+#include <queue>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -44,6 +48,72 @@ struct AlarmState {
   bool previous_active = false;
   int missed_frames = 0;
   int event_count = 0;
+};
+
+struct FramePacket {
+  int frame_index = 0;
+  cv::Mat frame;
+};
+
+struct PreparedPacket {
+  int frame_index = 0;
+  cv::Mat frame;
+  YoloRknnDetector::PreparedInput prepared;
+  InferProfile profile;
+};
+
+struct ResultPacket {
+  int frame_index = 0;
+  cv::Mat frame;
+  std::vector<Detection> detections;
+  InferProfile profile;
+  double infer_ms = 0.0;
+};
+
+template <typename T>
+class BoundedQueue {
+ public:
+  explicit BoundedQueue(std::size_t capacity) : capacity_(std::max<std::size_t>(1, capacity)) {}
+
+  bool Push(T item) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    not_full_.wait(lock, [&] { return closed_ || queue_.size() < capacity_; });
+    if (closed_) {
+      return false;
+    }
+    queue_.push(std::move(item));
+    not_empty_.notify_one();
+    return true;
+  }
+
+  bool Pop(T* item) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    not_empty_.wait(lock, [&] { return closed_ || !queue_.empty(); });
+    if (queue_.empty()) {
+      return false;
+    }
+    *item = std::move(queue_.front());
+    queue_.pop();
+    not_full_.notify_one();
+    return true;
+  }
+
+  void Close() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      closed_ = true;
+    }
+    not_empty_.notify_all();
+    not_full_.notify_all();
+  }
+
+ private:
+  std::size_t capacity_;
+  std::queue<T> queue_;
+  std::mutex mutex_;
+  std::condition_variable not_empty_;
+  std::condition_variable not_full_;
+  bool closed_ = false;
 };
 
 bool EnvFlagEnabled(const char* name) {
@@ -307,8 +377,15 @@ int main(int argc, char** argv) {
   std::cout << "alarm csv=" << alarm_csv << std::endl;
   std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
             << " hold_frames=" << alarm_config.hold_frames << std::endl;
+  const bool pipeline_enabled = EnvFlagEnabled("RK_YOLO_PIPELINE");
+  const bool staged_pipeline_enabled = pipeline_enabled && EnvFlagEnabled("RK_YOLO_PIPELINE_STAGED");
+  const int pipeline_queue_size = ParseEnvInt("RK_YOLO_PIPELINE_QUEUE", 4, 1, 64);
   std::cout << "profile=" << (profile_enabled ? "on" : "off")
             << ", zero_copy_input=" << (detector.zero_copy_input_enabled() ? "on" : "off")
+            << ", rga_required=" << (detector.rga_required() ? "on" : "off")
+            << ", pipeline=" << (pipeline_enabled ? "on" : "off")
+            << ", staged_pipeline=" << (staged_pipeline_enabled ? "on" : "off")
+            << ", pipeline_queue=" << pipeline_queue_size
             << std::endl;
   if (profile_enabled) {
     PrintProfileHeader();
@@ -320,49 +397,154 @@ int main(int argc, char** argv) {
   int total_detections = 0;
   AlarmState alarm_state;
 
-  cv::Mat frame;
-  while (cap.read(frame)) {
-    const auto start = std::chrono::steady_clock::now();
-    InferProfile profile;
-    std::vector<Detection> detections =
-        profile_enabled ? detector.InferProfiled(frame, score_threshold, nms_threshold, &profile)
-                        : detector.Infer(frame, score_threshold, nms_threshold);
-    const auto end = std::chrono::steady_clock::now();
-    const double infer_ms =
-        std::chrono::duration<double, std::milli>(end - start).count();
-    total_ms += infer_ms;
+  auto handle_result = [&](ResultPacket result) {
+    total_ms += result.infer_ms;
 
-    if (!detections.empty()) {
+    if (!result.detections.empty()) {
       ++detected_frames;
     }
-    total_detections += static_cast<int>(detections.size());
+    total_detections += static_cast<int>(result.detections.size());
 
     const auto render_start = std::chrono::steady_clock::now();
-    DrawDetections(&frame, detections, model_class_count);
-    UpdateAlarmState(detections, alarm_config, &alarm_state);
+    DrawDetections(&result.frame, result.detections, model_class_count);
+    UpdateAlarmState(result.detections, alarm_config, &alarm_state);
     if (alarm_config.overlay_enabled) {
-      DrawAlarmOverlay(&frame, alarm_state, detections);
+      DrawAlarmOverlay(&result.frame, alarm_state, result.detections);
     }
     if (alarm_state.active != alarm_state.previous_active) {
       ++alarm_state.event_count;
-      std::cout << "alarm_event frame=" << (frame_index + 1)
+      std::cout << "alarm_event frame=" << result.frame_index
                 << " state=" << (alarm_state.active ? "on" : "off")
-                << " detections=" << detections.size() << std::endl;
+                << " detections=" << result.detections.size() << std::endl;
     }
-    WriteAlarmEvent(&alarm_file, frame_index + 1, alarm_state, detections);
-    WriteDetectionRows(&csv_file, frame_index + 1, detections, model_class_count);
-    roi_file << BuildLegacyRoiJson(detections) << "\n";
-    writer.write(frame);
+    WriteAlarmEvent(&alarm_file, result.frame_index, alarm_state, result.detections);
+    WriteDetectionRows(&csv_file, result.frame_index, result.detections, model_class_count);
+    roi_file << BuildLegacyRoiJson(result.detections) << "\n";
+    writer.write(result.frame);
     const auto render_end = std::chrono::steady_clock::now();
     const double render_ms =
         std::chrono::duration<double, std::milli>(render_end - render_start).count();
 
-    ++frame_index;
+    frame_index = result.frame_index;
     if (profile_enabled) {
-      PrintProfileRow(frame_index, profile, render_ms);
+      PrintProfileRow(result.frame_index, result.profile, render_ms);
     } else {
-      std::cout << "frame=" << frame_index << " detections=" << detections.size()
-                << " infer_ms=" << std::fixed << std::setprecision(2) << infer_ms << std::endl;
+      std::cout << "frame=" << result.frame_index
+                << " detections=" << result.detections.size()
+                << " infer_ms=" << std::fixed << std::setprecision(2) << result.infer_ms
+                << std::endl;
+    }
+  };
+
+  if (pipeline_enabled) {
+    BoundedQueue<FramePacket> frame_queue(static_cast<std::size_t>(pipeline_queue_size));
+    BoundedQueue<ResultPacket> result_queue(static_cast<std::size_t>(pipeline_queue_size));
+    BoundedQueue<PreparedPacket> prepared_queue(static_cast<std::size_t>(pipeline_queue_size));
+
+    std::thread capture_thread([&] {
+      cv::Mat captured;
+      int captured_index = 0;
+      while (cap.read(captured)) {
+        FramePacket packet;
+        packet.frame_index = ++captured_index;
+        packet.frame = std::move(captured);
+        if (!frame_queue.Push(std::move(packet))) {
+          break;
+        }
+      }
+      frame_queue.Close();
+    });
+
+    std::thread prepare_thread;
+    if (staged_pipeline_enabled) {
+      prepare_thread = std::thread([&] {
+        FramePacket packet;
+        while (frame_queue.Pop(&packet)) {
+          PreparedPacket prepared;
+          prepared.frame_index = packet.frame_index;
+          prepared.frame = std::move(packet.frame);
+          if (!detector.PrepareFrame(prepared.frame, &prepared.prepared, &prepared.profile)) {
+            continue;
+          }
+          if (!prepared_queue.Push(std::move(prepared))) {
+            break;
+          }
+        }
+        prepared_queue.Close();
+      });
+    }
+
+    std::thread infer_thread([&] {
+      if (staged_pipeline_enabled) {
+        PreparedPacket packet;
+        while (prepared_queue.Pop(&packet)) {
+          ResultPacket result;
+          result.frame_index = packet.frame_index;
+          result.frame = std::move(packet.frame);
+          result.profile = packet.profile;
+          const auto infer_start = std::chrono::steady_clock::now();
+          result.detections =
+              detector.InferPrepared(packet.prepared, score_threshold, nms_threshold, &result.profile);
+          const auto infer_end = std::chrono::steady_clock::now();
+          result.infer_ms =
+              std::chrono::duration<double, std::milli>(infer_end - infer_start).count() +
+              result.profile.prepare_ms;
+          if (!result_queue.Push(std::move(result))) {
+            break;
+          }
+        }
+      } else {
+        FramePacket packet;
+        while (frame_queue.Pop(&packet)) {
+          ResultPacket result;
+          result.frame_index = packet.frame_index;
+          result.frame = std::move(packet.frame);
+          const auto infer_start = std::chrono::steady_clock::now();
+          result.detections =
+              detector.InferProfiled(result.frame, score_threshold, nms_threshold, &result.profile);
+          const auto infer_end = std::chrono::steady_clock::now();
+          result.infer_ms =
+              std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+          if (!result_queue.Push(std::move(result))) {
+            break;
+          }
+        }
+      }
+      result_queue.Close();
+    });
+
+    ResultPacket result;
+    while (result_queue.Pop(&result)) {
+      handle_result(std::move(result));
+    }
+
+    frame_queue.Close();
+    prepared_queue.Close();
+    result_queue.Close();
+    if (capture_thread.joinable()) {
+      capture_thread.join();
+    }
+    if (prepare_thread.joinable()) {
+      prepare_thread.join();
+    }
+    if (infer_thread.joinable()) {
+      infer_thread.join();
+    }
+  } else {
+    cv::Mat frame;
+    while (cap.read(frame)) {
+      ResultPacket result;
+      result.frame_index = frame_index + 1;
+      result.frame = frame;
+      const auto infer_start = std::chrono::steady_clock::now();
+      result.detections =
+          profile_enabled ? detector.InferProfiled(result.frame, score_threshold, nms_threshold,
+                                                   &result.profile)
+                          : detector.Infer(result.frame, score_threshold, nms_threshold);
+      const auto infer_end = std::chrono::steady_clock::now();
+      result.infer_ms =
+          std::chrono::duration<double, std::milli>(infer_end - infer_start).count();
+      handle_result(std::move(result));
     }
   }
 

@@ -176,6 +176,23 @@ The RGA paths require `librga-dev` on the board. If RGA is not available, or if 
 operation fails, the program prints a warning and falls back to the stable OpenCV preprocessing path.
 This keeps demonstrations and existing validation runs compatible with the known-good baseline.
 
+For task-book validation, use strict full-RGA mode so the run fails instead of silently falling back
+to OpenCV if RGA is unavailable. This path asks RGA to handle color conversion, resize, and
+letterbox canvas construction before RKNN NPU inference:
+
+```bash
+RK_YOLO_PROFILE=1 RK_YOLO_PIPELINE=1 RK_YOLO_PIPELINE_STAGED=1 RK_YOLO_PREPROCESS=rga_cvt_resize RK_YOLO_RGA_LETTERBOX=1 RK_YOLO_REQUIRE_RGA=1 ./rk_yolo_video input.mp4 output_taskbook_rga.mp4 ../../training_runs/drone_gpu_50e/weights/best.rk3588.fp.rknn 0.35 0.45 taskbook.csv taskbook.roi.jsonl taskbook.alarm.csv
+```
+
+The repository also provides a board-side reproducibility script for the task-book pipeline:
+
+```bash
+bash scripts/run_taskbook_pipeline_eval.sh /home/ubuntu/public_videos/anti_uav_fig1.mp4
+```
+
+This script runs `video capture -> strict full-RGA preprocessing -> NPU inference -> post-processing`
+with profiling enabled and writes a `taskbook_pipeline_summary.csv` file beside the output video.
+
 The CSV file records one line per detection:
 
 ```text

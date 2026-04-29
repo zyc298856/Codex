@@ -110,6 +110,11 @@ bool RgaLetterboxEnabled() {
   return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
 }
 
+bool RgaRequiredEnabled() {
+  const char* env_value = std::getenv("RK_YOLO_REQUIRE_RGA");
+  return env_value != nullptr && env_value[0] != '\0' && env_value[0] != '0';
+}
+
 std::string RgaPreprocessMode() {
   const char* env_value = std::getenv("RK_YOLO_PREPROCESS");
   if (env_value == nullptr || env_value[0] == '\0') {
@@ -216,6 +221,7 @@ YoloRknnDetector::YoloRknnDetector()
       rga_preprocess_enabled_(false),
       rga_cvt_resize_enabled_(false),
       rga_letterbox_enabled_(false),
+      rga_required_(false),
       zero_copy_input_mem_(nullptr),
       zero_copy_input_attr_{},
       loaded_(false) {}
@@ -288,6 +294,15 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
   rga_preprocess_enabled_ = (preprocess_mode == "rga");
   rga_cvt_resize_enabled_ = (preprocess_mode == "rga_cvt_resize");
   rga_letterbox_enabled_ = RgaLetterboxEnabled();
+  rga_required_ = RgaRequiredEnabled();
+  if (rga_required_ && !rga_preprocess_enabled_ && !rga_cvt_resize_enabled_ &&
+      !rga_letterbox_enabled_) {
+    std::cerr << "RK_YOLO_REQUIRE_RGA=1 requires RK_YOLO_PREPROCESS=rga, "
+              << "RK_YOLO_PREPROCESS=rga_cvt_resize, or RK_YOLO_RGA_LETTERBOX=1"
+              << std::endl;
+    Release();
+    return false;
+  }
 #ifdef HAVE_RGA
   if (rga_cvt_resize_enabled_) {
     std::cout << "preprocess=rga_cvt_resize" << std::endl;
@@ -296,8 +311,14 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
               << std::endl;
   }
   std::cout << "rga_letterbox=" << (rga_letterbox_enabled_ ? "on" : "off") << std::endl;
+  std::cout << "rga_required=" << (rga_required_ ? "on" : "off") << std::endl;
 #else
   if (rga_preprocess_enabled_ || rga_cvt_resize_enabled_ || rga_letterbox_enabled_) {
+    if (rga_required_) {
+      std::cerr << "RGA was required but this build was compiled without HAVE_RGA" << std::endl;
+      Release();
+      return false;
+    }
     std::cout << "preprocess=rga_requested_but_unavailable_fallback_opencv" << std::endl;
     rga_preprocess_enabled_ = false;
     rga_cvt_resize_enabled_ = false;
@@ -306,6 +327,7 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
     std::cout << "preprocess=opencv" << std::endl;
   }
   std::cout << "rga_letterbox=off" << std::endl;
+  std::cout << "rga_required=" << (rga_required_ ? "on" : "off") << std::endl;
 #endif
 
   if (ZeroCopyInputEnabled()) {
@@ -340,6 +362,7 @@ void YoloRknnDetector::Release() {
   rga_preprocess_enabled_ = false;
   rga_cvt_resize_enabled_ = false;
   rga_letterbox_enabled_ = false;
+  rga_required_ = false;
   zero_copy_input_attr_ = {};
   loaded_ = false;
 }
@@ -366,15 +389,24 @@ bool YoloRknnDetector::PrepareInput(const cv::Mat& frame, std::vector<unsigned c
   letterbox->pad_x = static_cast<float>(pad_left);
   letterbox->pad_y = static_cast<float>(pad_top);
 
-  if (rga_letterbox_enabled_ &&
-      PrepareLetterboxWithRga(frame, input_u8, resized_w, resized_h, pad_left, pad_top)) {
-    return true;
+  if (rga_letterbox_enabled_) {
+    if (PrepareLetterboxWithRga(frame, input_u8, resized_w, resized_h, pad_left, pad_top)) {
+      return true;
+    }
+    if (rga_required_) {
+      std::cerr << "RGA letterbox was required but failed" << std::endl;
+      return false;
+    }
   }
 
   cv::Mat resized;
   bool prepared_with_rga = false;
   if (rga_cvt_resize_enabled_) {
     prepared_with_rga = ResizeBgrToRgbWithRga(frame, &resized, resized_w, resized_h);
+    if (!prepared_with_rga && rga_required_) {
+      std::cerr << "RGA cvt+resize was required but failed" << std::endl;
+      return false;
+    }
   }
 
   if (!prepared_with_rga) {
@@ -382,6 +414,10 @@ bool YoloRknnDetector::PrepareInput(const cv::Mat& frame, std::vector<unsigned c
     cv::cvtColor(frame, rgb, cv::COLOR_BGR2RGB);
     if (rga_preprocess_enabled_) {
       prepared_with_rga = ResizeRgbWithRga(rgb, &resized, resized_w, resized_h);
+      if (!prepared_with_rga && rga_required_) {
+        std::cerr << "RGA resize was required but failed" << std::endl;
+        return false;
+      }
     }
     if (!prepared_with_rga) {
       cv::resize(rgb, resized, cv::Size(resized_w, resized_h), 0.0, 0.0, cv::INTER_LINEAR);
@@ -748,42 +784,55 @@ std::vector<Detection> YoloRknnDetector::Infer(const cv::Mat& frame, float score
   return InferProfiled(frame, score_threshold, nms_threshold, nullptr);
 }
 
-std::vector<Detection> YoloRknnDetector::InferProfiled(const cv::Mat& frame,
+bool YoloRknnDetector::PrepareFrame(const cv::Mat& frame, PreparedInput* prepared,
+                                    InferProfile* profile) {
+  if (!loaded_) {
+    return false;
+  }
+  if (prepared == nullptr) {
+    return false;
+  }
+
+  const auto prepare_start = Clock::now();
+  if (!PrepareInput(frame, &prepared->input_u8, &prepared->letterbox)) {
+    std::cerr << "failed to prepare input frame" << std::endl;
+    return false;
+  }
+  const auto prepare_end = Clock::now();
+  if (profile != nullptr) {
+    profile->prepare_ms = ElapsedMs(prepare_start, prepare_end);
+  }
+  return true;
+}
+
+std::vector<Detection> YoloRknnDetector::InferPrepared(const PreparedInput& prepared,
                                                        float score_threshold,
                                                        float nms_threshold,
                                                        InferProfile* profile) {
-  if (!loaded_) {
+  if (!loaded_ || prepared.input_u8.empty()) {
     return {};
   }
 
   InferProfile local_profile;
   InferProfile& p = (profile != nullptr) ? *profile : local_profile;
+  const double prepared_ms = p.prepare_ms;
   p = InferProfile{};
+  p.prepare_ms = prepared_ms;
   p.zero_copy_input = zero_copy_input_enabled_;
   const auto total_start = Clock::now();
-
-  std::vector<unsigned char> input_u8;
-  LetterBoxInfo letterbox;
-  const auto prepare_start = Clock::now();
-  if (!PrepareInput(frame, &input_u8, &letterbox)) {
-    std::cerr << "failed to prepare input frame" << std::endl;
-    return {};
-  }
-  const auto prepare_end = Clock::now();
-  p.prepare_ms = ElapsedMs(prepare_start, prepare_end);
 
   rknn_input input = {};
   input.index = 0;
   input.pass_through = 0;
   input.type = RKNN_TENSOR_UINT8;
   input.fmt = RKNN_TENSOR_NHWC;
-  input.size = static_cast<uint32_t>(input_u8.size());
-  input.buf = input_u8.data();
+  input.size = static_cast<uint32_t>(prepared.input_u8.size());
+  input.buf = const_cast<unsigned char*>(prepared.input_u8.data());
 
   const auto inputs_set_start = Clock::now();
   int ret = RKNN_SUCC;
   if (zero_copy_input_enabled_) {
-    ret = UseZeroCopyInput(input_u8) ? RKNN_SUCC : -1;
+    ret = UseZeroCopyInput(prepared.input_u8) ? RKNN_SUCC : -1;
   } else {
     ret = rknn_inputs_set(ctx_, 1, &input);
   }
@@ -837,7 +886,8 @@ std::vector<Detection> YoloRknnDetector::InferProfiled(const cv::Mat& frame,
 
   const auto decode_start = Clock::now();
   std::vector<Detection> detections =
-      DecodeOutput(output_data, output_count, output_attrs_[0], letterbox, score_threshold, nms_threshold);
+      DecodeOutput(output_data, output_count, output_attrs_[0], prepared.letterbox, score_threshold,
+                   nms_threshold);
   const auto decode_end = Clock::now();
   p.decode_ms = ElapsedMs(decode_start, decode_end);
 
@@ -846,6 +896,25 @@ std::vector<Detection> YoloRknnDetector::InferProfiled(const cv::Mat& frame,
   const auto release_end = Clock::now();
   p.outputs_release_ms = ElapsedMs(release_start, release_end);
   p.detections = detections.size();
-  p.total_ms = ElapsedMs(total_start, release_end);
+  p.total_ms = p.prepare_ms + ElapsedMs(total_start, release_end);
   return detections;
+}
+
+std::vector<Detection> YoloRknnDetector::InferProfiled(const cv::Mat& frame,
+                                                       float score_threshold,
+                                                       float nms_threshold,
+                                                       InferProfile* profile) {
+  if (!loaded_) {
+    return {};
+  }
+
+  InferProfile local_profile;
+  InferProfile& p = (profile != nullptr) ? *profile : local_profile;
+  p = InferProfile{};
+
+  PreparedInput prepared;
+  if (!PrepareFrame(frame, &prepared, &p)) {
+    return {};
+  }
+  return InferPrepared(prepared, score_threshold, nms_threshold, &p);
 }
