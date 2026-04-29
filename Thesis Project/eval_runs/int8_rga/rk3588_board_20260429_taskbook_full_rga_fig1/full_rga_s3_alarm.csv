@@ -1,0 +1,15 @@
+frame_index,event,active,detections,max_score
+1,alarm_on,1,1,0.6147
+11,alarm_off,0,0,0.0000
+12,alarm_on,1,1,0.4595
+18,alarm_off,0,0,0.0000
+20,alarm_on,1,1,0.4404
+26,alarm_off,0,0,0.0000
+28,alarm_on,1,1,0.5815
+40,alarm_off,0,0,0.0000
+41,alarm_on,1,1,0.4092
+75,alarm_off,0,0,0.0000
+89,alarm_on,1,1,0.3879
+96,alarm_off,0,0,0.0000
+105,alarm_on,1,1,0.3674
+113,alarm_off,0,0,0.0000

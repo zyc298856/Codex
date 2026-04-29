@@ -313,3 +313,24 @@ The task-book reproducibility script was updated so its primary case now uses st
 - `rk_yolo_video/scripts/run_taskbook_pipeline_eval.sh`
 
 Updated conclusion: the RGA line now satisfies the implementation and validation requirement more strongly than the earlier partial RGA path. It proves that RGA participates in color conversion, resizing, and letterbox input construction, with no OpenCV fallback allowed in the strict run. The measured performance is not the best among all configurations, but the functional and reproducibility evidence is sufficient to support the thesis claim that an RGA hardware-preprocessing pipeline was implemented and validated on RK3588.
+
+## Claude audit follow-up: S-2 + S-3
+
+After the RGA preprocessing audit, two follow-up items were completed:
+
+- **S-2 thesis wording update**: section 5.8 of `paper/full_thesis_latest_merged.docx` now explicitly records the `taskbook full-RGA strict` validation case, including the key switches `RK_YOLO_PIPELINE=1`, `RK_YOLO_PIPELINE_STAGED=1`, `RK_YOLO_PREPROCESS=rga_cvt_resize`, `RK_YOLO_RGA_LETTERBOX=1`, and `RK_YOLO_REQUIRE_RGA=1`. The wording also clarifies that this case is used as task-book compliance and hardware-preprocessing evidence, not as the final fastest runtime recommendation.
+- **S-3 runtime log evidence**: `PrepareLetterboxWithRga()` now prints a one-time success message when the RGA letterbox path is actually used: `RGA letterbox used: OpenCV cvtColor/resize/copyMakeBorder skipped`.
+
+Board-side S-3 validation result:
+
+- Build status: passed with `librga found`.
+- Runtime switches: `preprocess=rga_cvt_resize`, `rga_letterbox=on`, `rga_required=on`, `pipeline=on`, `staged_pipeline=on`.
+- New evidence line: `RGA letterbox used: OpenCV cvtColor/resize/copyMakeBorder skipped`.
+- Fixed-video result: `frames=130`, `frames_with_detections=30`, `total_detections=30`, `alarm_events=14`, `avg_infer_ms=132.92`.
+
+Local S-3 evidence files:
+
+- `eval_runs/int8_rga/rk3588_board_20260429_taskbook_full_rga_fig1/full_rga_s3.log`
+- `eval_runs/int8_rga/rk3588_board_20260429_taskbook_full_rga_fig1/full_rga_s3_detections.csv`
+- `eval_runs/int8_rga/rk3588_board_20260429_taskbook_full_rga_fig1/full_rga_s3_alarm.csv`
+- `eval_runs/int8_rga/rk3588_board_20260429_taskbook_full_rga_fig1/full_rga_s3_roi.jsonl`

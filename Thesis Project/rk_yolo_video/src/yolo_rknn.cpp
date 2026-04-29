@@ -585,6 +585,12 @@ bool YoloRknnDetector::PrepareLetterboxWithRga(const cv::Mat& bgr,
     return false;
   }
 
+  static bool success_logged = false;
+  if (!success_logged) {
+    std::cout << "RGA letterbox used: OpenCV cvtColor/resize/copyMakeBorder skipped"
+              << std::endl;
+    success_logged = true;
+  }
   input_u8->assign(padded.data, padded.data + padded.total() * padded.elemSize());
   return true;
 #endif
