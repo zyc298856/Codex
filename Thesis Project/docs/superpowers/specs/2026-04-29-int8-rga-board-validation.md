@@ -384,3 +384,42 @@ Key evidence files:
 - `int8_full.log`
 - `int8_hybrid_head230.log`
 - corresponding detection, ROI, and alarm CSV/JSONL files for all three cases
+
+## Offline follow-up: stronger INT8 calibration and threshold sweep preparation
+
+When the board is not available, the INT8 line can still be improved without touching the stable FP/RGA runtime path. Two offline improvements were prepared:
+
+1. Calibration-list generation now supports pinned images through `--pinned-image-dir`. This ensures that difficult public-video drone frames are always included in the calibration set rather than being lost during random sampling.
+2. A board-side threshold sweep script was added: `rk_yolo_video/scripts/run_taskbook_int8_sweep.sh`.
+
+New calibration lists prepared locally:
+
+| Calibration list | Images | Purpose |
+|---|---:|---|
+| `drone_calib_500_with_public_targets_windows.txt` | 500 | Windows-path medium calibration set with pinned public target frames |
+| `drone_calib_500_with_public_targets_wsl_nospace.txt` | 500 | WSL `/tmp/thesis_project` medium calibration set for RKNN Toolkit2 |
+| `drone_calib_1000_with_public_targets_windows.txt` | 1000 | Windows-path larger calibration set with pinned public target frames |
+| `drone_calib_1000_with_public_targets_wsl_nospace.txt` | 1000 | WSL `/tmp/thesis_project` larger calibration set for RKNN Toolkit2 |
+
+The first 30 entries in these lists are the selected public-video drone target frames from:
+
+- `datasets/drone_single_class/calibration/int8_public_targets_20260429/selected_frames`
+
+The next board-side validation should compare:
+
+- Existing FP baseline
+- Existing full INT8
+- Existing hybrid INT8
+- Newly converted INT8 model from the 500-image pinned calibration set
+- Newly converted INT8 model from the 1000-image pinned calibration set
+
+The threshold sweep should use:
+
+- `RK_YOLO_INT8_SWEEP_THRESHOLDS="0.05 0.10 0.20 0.35"`
+- `RK_YOLO_INT8_SWEEP_NMS=0.45`
+
+Expected interpretation:
+
+- If full INT8 remains at zero detections even at low confidence thresholds, the issue is likely deeper quantization sensitivity in the output head or activation distribution.
+- If full INT8 recovers detections at lower thresholds, the main issue is confidence-scale shift after quantization, and the thesis can report threshold retuning as part of INT8 deployment.
+- If larger pinned calibration lists improve full INT8 consistency, the task-book INT8 requirement is better supported by showing a concrete calibration-quality improvement path.

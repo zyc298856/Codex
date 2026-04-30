@@ -27,6 +27,24 @@ python tools/int8_rga/make_calibration_list.py `
 
 Use representative images. For this project, start with 100 to 300 images from the single-class drone dataset, then increase only if INT8 accuracy is unstable.
 
+For the current INT8 follow-up, use pinned public-video target frames so that the calibration set always includes difficult small-drone examples:
+
+```powershell
+python tools/int8_rga/make_calibration_list.py `
+  --dataset-yaml datasets/drone_single_class/dataset.yaml `
+  --split train `
+  --split val `
+  --pinned-image-dir datasets/drone_single_class/calibration/int8_public_targets_20260429/selected_frames `
+  --limit 500 `
+  --output training_runs/drone_gpu_50e/calibration/drone_calib_500_with_public_targets_windows.txt
+```
+
+Prepared calibration-list sizes:
+
+- `drone_calib_230_with_public_targets_*`: first hybrid INT8 attempt.
+- `drone_calib_500_with_public_targets_*`: medium calibration set, pinned public target frames plus train/val samples.
+- `drone_calib_1000_with_public_targets_*`: larger calibration set for checking whether full INT8 confidence collapse can be reduced.
+
 If RKNN Toolkit2 runs in WSL and the project path contains spaces, create a no-space symlink and keep symlink paths in the calibration file:
 
 ```bash
@@ -62,6 +80,16 @@ python tools/int8_rga/convert_onnx_to_rknn.py `
   --dataset training_runs/drone_gpu_50e/calibration/drone_calib_200.txt
 ```
 
+For the stronger calibration follow-up, replace `--dataset` with one of the pinned public-target lists, for example:
+
+```bash
+python tools/int8_rga/convert_onnx_to_rknn.py \
+  --onnx training_runs/drone_gpu_50e/weights/best.end2end_false.op12.onnx \
+  --output training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.calib500.v220.rknn \
+  --dtype int8 \
+  --dataset training_runs/drone_gpu_50e/calibration/drone_calib_500_with_public_targets_wsl_nospace.txt
+```
+
 The script requires RKNN Toolkit2 in the active Python environment. Use `--dry-run` to validate arguments without importing RKNN Toolkit2.
 
 ### Task-book INT8 board validation
@@ -79,6 +107,29 @@ scripts/run_taskbook_int8_eval.sh \
 ```
 
 This compares the stable FP model, the fully quantized INT8 model, and the manual hybrid INT8 model on the same fixed video. The expected interpretation is conservative: INT8 is considered validated as a quantization and board-side experiment, but it should only replace FP after detection consistency is comparable to the FP baseline.
+
+If full INT8 has no detections at the default confidence threshold, run the threshold sweep:
+
+```bash
+cd /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video
+RK_YOLO_INT8_SWEEP_THRESHOLDS="0.05 0.10 0.20 0.35" \
+scripts/run_taskbook_int8_sweep.sh \
+  /home/ubuntu/public_videos/anti_uav_fig1.mp4 \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.fp.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.hybrid_head230.v220.rknn \
+  /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_int8_sweep
+```
+
+The sweep output `taskbook_int8_sweep_summary.csv` is used to determine whether the full INT8 model is truly unusable or whether quantization mainly shifts the confidence distribution lower.
+
+After converting additional calibration variants, append them without editing the script:
+
+```bash
+RK_YOLO_INT8_EXTRA_MODELS="int8_calib500=/home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.calib500.v220.rknn int8_calib1000=/home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.int8.calib1000.v220.rknn" \
+RK_YOLO_INT8_SWEEP_THRESHOLDS="0.05 0.10 0.20 0.35" \
+scripts/run_taskbook_int8_sweep.sh ...
+```
 
 ### 3. Generate board-side command matrix
 

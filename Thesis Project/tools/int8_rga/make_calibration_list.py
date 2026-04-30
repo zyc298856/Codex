@@ -29,6 +29,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Additional image directory or image-list txt. Can be repeated.",
     )
+    parser.add_argument(
+        "--pinned-image-dir",
+        action="append",
+        type=Path,
+        default=[],
+        help=(
+            "Image directory or txt whose images should always be kept first, "
+            "up to --limit. Useful for including known difficult public-video frames."
+        ),
+    )
     parser.add_argument("--output", required=True, type=Path, help="Output calibration txt path.")
     parser.add_argument("--limit", type=int, default=200, help="Maximum number of images to write.")
     parser.add_argument("--seed", type=int, default=20260429, help="Shuffle seed.")
@@ -164,19 +174,28 @@ def main() -> int:
     if not sources:
         raise ValueError("no sources provided; use --dataset-yaml or --image-dir")
 
+    pinned_images: List[Path] = []
+    for source in args.pinned_image_dir:
+        pinned_images.extend(collect_from_path(source))
+
     images: List[Path] = []
     for source in sources:
         images.extend(collect_from_path(source))
 
+    unique_pinned_images = sorted(
+        {image.absolute() if args.preserve_symlinks else image.resolve() for image in pinned_images}
+    )
     unique_images = sorted(
         {image.absolute() if args.preserve_symlinks else image.resolve() for image in images}
     )
-    if not unique_images:
+    if not unique_images and not unique_pinned_images:
         raise RuntimeError(f"no images found from sources: {sources}")
 
     rng = random.Random(args.seed)
     rng.shuffle(unique_images)
-    selected = unique_images[: args.limit]
+    pinned_set = set(unique_pinned_images)
+    fill_images = [image for image in unique_images if image not in pinned_set]
+    selected = (unique_pinned_images + fill_images)[: args.limit]
     rewrite_rules = parse_rewrite_rules(args.rewrite_prefix)
 
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -191,6 +210,8 @@ def main() -> int:
         encoding="utf-8",
     )
     print(f"sources={len(sources)}")
+    print(f"pinned_sources={len(args.pinned_image_dir)}")
+    print(f"pinned_images_found={len(unique_pinned_images)}")
     print(f"images_found={len(unique_images)}")
     print(f"images_written={len(selected)}")
     print(f"output={args.output}")
