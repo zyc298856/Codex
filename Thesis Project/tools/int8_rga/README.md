@@ -131,6 +131,8 @@ RK_YOLO_INT8_SWEEP_THRESHOLDS="0.05 0.10 0.20 0.35" \
 scripts/run_taskbook_int8_sweep.sh ...
 ```
 
+Current board finding from the 2026-05-01 follow-up: lowering the confidence threshold to `0.05` and rebuilding full INT8 with the 500/1000 pinned calibration lists still produced zero detections on the fixed public UAV clip. Manual hybrid quantization around the sensitive output-head range remains the best INT8 compromise observed so far.
+
 ### 3. Generate board-side command matrix
 
 ```powershell

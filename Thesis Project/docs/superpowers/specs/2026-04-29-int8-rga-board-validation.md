@@ -423,3 +423,85 @@ Expected interpretation:
 - If full INT8 remains at zero detections even at low confidence thresholds, the issue is likely deeper quantization sensitivity in the output head or activation distribution.
 - If full INT8 recovers detections at lower thresholds, the main issue is confidence-scale shift after quantization, and the thesis can report threshold retuning as part of INT8 deployment.
 - If larger pinned calibration lists improve full INT8 consistency, the task-book INT8 requirement is better supported by showing a concrete calibration-quality improvement path.
+
+## 2026-05-01 board follow-up: INT8 threshold sweep
+
+Board network note:
+
+- Location: home
+- SSH address used successfully: `ubuntu@192.168.2.156`
+
+The prepared sweep script was synchronized to the board and executed on the fixed public UAV clip:
+
+- Video: `/home/ubuntu/public_videos/anti_uav_fig1.mp4`
+- Script: `rk_yolo_video/scripts/run_taskbook_int8_sweep.sh`
+- Thresholds: `0.05`, `0.10`, `0.20`, `0.35`
+- NMS threshold: `0.45`
+- Preprocess path: `opencv`
+
+### Existing INT8 variants
+
+Board output directory:
+
+- `/home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_int8_sweep_20260501_fig1`
+
+Local evidence directory:
+
+- `eval_runs/int8_rga/taskbook_int8_sweep_20260501_fig1`
+
+Key result summary:
+
+| Model | Conf | Frames with detections | Total detections | Avg infer ms |
+|---|---:|---:|---:|---:|
+| FP baseline | 0.05 | 102 | 220 | 109.01 |
+| INT8 full | 0.05 | 0 | 0 | 39.43 |
+| INT8 hybrid head230 | 0.05 | 98 | 191 | 43.24 |
+| INT8 public230 | 0.05 | 0 | 0 | 39.01 |
+| INT8 autohybrid230 | 0.05 | 0 | 0 | 36.67 |
+| FP baseline | 0.35 | 30 | 30 | 109.23 |
+| INT8 full | 0.35 | 0 | 0 | 40.35 |
+| INT8 hybrid head230 | 0.35 | 23 | 23 | 43.85 |
+| INT8 public230 | 0.35 | 0 | 0 | 38.15 |
+| INT8 autohybrid230 | 0.35 | 0 | 0 | 37.82 |
+
+Conclusion from this sweep:
+
+- Lowering the confidence threshold to `0.05` does not recover the fully quantized INT8 model.
+- `public230` and Toolkit auto-hybrid also remain at zero detections on this fixed clip.
+- Manual hybrid quantization of the sensitive output-head range remains the only INT8 variant that preserves useful detection behavior.
+
+### New pinned-calibration INT8 variants
+
+Two new full-INT8 models were converted in the WSL RKNN Toolkit2 environment using the pinned public-target calibration lists:
+
+- `best.end2end_false.op12.rk3588.int8.calib500.v220.rknn`
+- `best.end2end_false.op12.rk3588.int8.calib1000.v220.rknn`
+
+Board output directory:
+
+- `/home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_int8_sweep_calib500_1000_20260501_fig1`
+
+Local evidence directory:
+
+- `eval_runs/int8_rga/taskbook_int8_sweep_calib500_1000_20260501_fig1`
+
+Key result summary:
+
+| Model | Conf | Frames with detections | Total detections | Avg infer ms |
+|---|---:|---:|---:|---:|
+| FP baseline | 0.05 | 102 | 220 | 109.17 |
+| INT8 full | 0.05 | 0 | 0 | 35.09 |
+| INT8 hybrid head230 | 0.05 | 98 | 191 | 42.66 |
+| INT8 calib500 | 0.05 | 0 | 0 | 39.31 |
+| INT8 calib1000 | 0.05 | 0 | 0 | 38.33 |
+| FP baseline | 0.35 | 30 | 30 | 111.63 |
+| INT8 full | 0.35 | 0 | 0 | 38.26 |
+| INT8 hybrid head230 | 0.35 | 23 | 23 | 43.03 |
+| INT8 calib500 | 0.35 | 0 | 0 | 40.04 |
+| INT8 calib1000 | 0.35 | 0 | 0 | 39.17 |
+
+Updated conclusion:
+
+- Enlarging the calibration set to 500 or 1000 images and pinning public UAV target frames does not recover full-INT8 detection on this fixed clip.
+- This makes the failure mode clearer: the model is not merely affected by insufficient calibration samples or an over-high confidence threshold. The sensitive YOLO output head and activation distribution likely require partial high-precision retention.
+- For the thesis and task-book compliance, the strongest defensible statement is: INT8 conversion, calibration-set improvement, multi-threshold board validation, and hybrid quantization mitigation were all completed. Full INT8 gives lower inference latency but loses detection consistency; manual hybrid INT8 gives a practical speed/accuracy compromise, while FP RKNN remains the final stable demonstration path.
