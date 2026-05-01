@@ -133,6 +133,16 @@ scripts/run_taskbook_int8_sweep.sh ...
 
 Current board finding from the 2026-05-01 follow-up: lowering the confidence threshold to `0.05` and rebuilding full INT8 with the 500/1000 pinned calibration lists still produced zero detections on the fixed public UAV clip. Manual hybrid quantization around the sensitive output-head range remains the best INT8 compromise observed so far.
 
+The current strongest task-book-oriented validation is the combined strict path:
+
+```bash
+RK_YOLO_PIPELINE=1 RK_YOLO_PIPELINE_STAGED=1 \
+RK_YOLO_PREPROCESS=rga_cvt_resize RK_YOLO_RGA_LETTERBOX=1 RK_YOLO_REQUIRE_RGA=1 \
+./build/rk_yolo_video public_video.mp4 out.mp4 best.end2end_false.op12.rk3588.int8.hybrid_head230.v220.rknn
+```
+
+On `anti_uav_fig1.mp4`, this strict full-RGA + hybrid INT8 path preserved useful detections and reduced average inference time from roughly `147 ms` for FP full-RGA to roughly `46 ms`.
+
 ### 3. Generate board-side command matrix
 
 ```powershell

@@ -1,0 +1,166 @@
+model input num: 1, output num: 1
+input index=0 name=images dims=[1, 640, 640, 3] elems=1228800 size=2457600 fmt=nhwc type=float16
+output index=0 name=output0 dims=[1, 5, 8400] elems=42000 size=84000 fmt=other type=float16
+resolved model input: 640x640 channels=3
+resolved model classes: 1
+preprocess=rga_cvt_resize
+rga_letterbox=on
+rga_required=on
+zero_copy_input=off
+processing video /home/ubuntu/public_videos/anti_uav_fig1.mp4 -> /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035.mp4
+model path=/home/ubuntu/eclipse-workspace/eclipse-workspace/training_runs/drone_gpu_50e/weights/best.end2end_false.op12.rk3588.fp.v220.rknn
+score threshold=0.35, nms threshold=0.45
+detections csv=/home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035_detections.csv
+roi jsonl=/home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035_roi.jsonl
+alarm csv=/home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035_alarm.csv
+alarm_overlay=on hold_frames=5
+profile=on, zero_copy_input=off, rga_required=on, pipeline=on, staged_pipeline=on, pipeline_queue=4
+profile_csv_header,frame,input_mode,prepare_ms,input_set_or_update_ms,rknn_run_ms,outputs_get_ms,decode_nms_ms,outputs_release_ms,render_ms,total_work_ms,detections
+rga_api version 1.10.1_[10]
+RGA letterbox used: OpenCV cvtColor/resize/copyMakeBorder skipped
+alarm_event frame=1 state=on detections=1
+profile_csv,1,rknn_inputs_set,4.39,51.83,45.59,0.40,1.46,0.00,27.78,131.47,1
+profile_csv,2,rknn_inputs_set,3.91,50.74,41.14,0.28,1.45,0.00,17.98,115.52,0
+profile_csv,3,rknn_inputs_set,3.80,49.63,41.47,0.28,1.45,0.00,35.35,132.00,1
+profile_csv,4,rknn_inputs_set,3.20,51.06,57.51,1.25,6.74,0.00,31.18,150.97,1
+profile_csv,5,rknn_inputs_set,3.07,105.31,54.64,1.25,6.75,0.00,33.57,204.71,1
+profile_csv,6,rknn_inputs_set,3.02,87.31,49.22,0.84,4.46,0.00,24.10,168.98,0
+profile_csv,7,rknn_inputs_set,3.04,84.61,55.25,1.25,6.65,0.00,32.88,183.71,0
+profile_csv,8,rknn_inputs_set,2.56,93.21,50.47,1.25,6.67,0.00,46.11,200.30,0
+profile_csv,9,rknn_inputs_set,3.17,92.64,49.32,0.84,4.46,0.00,35.29,185.76,0
+profile_csv,10,rknn_inputs_set,9.43,82.49,53.37,1.31,6.64,0.00,42.96,196.24,0
+alarm_event frame=11 state=off detections=0
+profile_csv,11,rknn_inputs_set,9.58,87.32,52.15,1.26,6.67,0.00,47.40,204.41,0
+alarm_event frame=12 state=on detections=1
+profile_csv,12,rknn_inputs_set,6.58,93.60,53.79,1.30,6.71,0.00,57.35,219.36,1
+profile_csv,13,rknn_inputs_set,9.46,94.62,46.93,0.54,2.67,0.00,24.23,178.47,0
+profile_csv,14,rknn_inputs_set,18.31,68.16,50.25,0.84,4.50,0.00,45.05,187.13,0
+profile_csv,15,rknn_inputs_set,6.43,87.06,55.53,1.31,6.63,0.00,46.25,203.24,0
+profile_csv,16,rknn_inputs_set,9.42,86.97,59.25,1.25,6.66,0.00,52.78,216.36,0
+profile_csv,17,rknn_inputs_set,9.40,96.27,45.50,0.52,2.68,0.00,34.42,188.80,0
+alarm_event frame=18 state=off detections=0
+profile_csv,18,rknn_inputs_set,9.18,74.74,49.74,0.84,4.42,0.00,41.88,180.83,0
+profile_csv,19,rknn_inputs_set,4.23,84.45,43.97,0.36,1.86,0.00,32.51,167.39,0
+alarm_event frame=20 state=on detections=1
+profile_csv,20,rknn_inputs_set,7.07,71.71,51.71,0.84,4.48,0.00,39.21,175.06,1
+profile_csv,21,rknn_inputs_set,9.75,82.52,43.23,1.31,6.65,0.00,41.49,184.98,0
+profile_csv,22,rknn_inputs_set,9.06,81.07,58.02,1.32,6.74,0.00,47.49,203.74,0
+profile_csv,23,rknn_inputs_set,4.28,90.38,51.84,0.89,4.40,0.00,39.62,191.44,0
+profile_csv,24,rknn_inputs_set,6.55,80.80,52.45,0.84,4.46,0.00,35.34,180.47,0
+profile_csv,25,rknn_inputs_set,3.21,81.93,56.47,1.25,6.70,0.00,40.71,190.31,0
+alarm_event frame=26 state=off detections=0
+profile_csv,26,rknn_inputs_set,11.38,88.11,54.66,1.31,6.69,0.00,47.54,209.72,0
+profile_csv,27,rknn_inputs_set,12.60,89.18,55.53,1.31,6.65,0.00,49.43,214.73,0
+alarm_event frame=28 state=on detections=1
+profile_csv,28,rknn_inputs_set,9.76,100.24,47.78,1.25,6.80,0.00,49.79,215.66,1
+profile_csv,29,rknn_inputs_set,6.46,90.18,55.43,1.31,6.72,0.00,51.27,211.40,1
+profile_csv,30,rknn_inputs_set,6.61,93.66,47.82,0.84,4.45,0.00,34.41,187.82,0
+profile_csv,31,rknn_inputs_set,9.40,82.87,48.01,0.84,4.45,0.00,43.98,189.58,0
+profile_csv,32,rknn_inputs_set,20.48,81.00,49.68,0.84,4.43,0.00,35.60,192.05,0
+profile_csv,33,rknn_inputs_set,9.48,83.88,55.77,1.31,6.74,0.00,51.82,209.03,1
+profile_csv,34,rknn_inputs_set,20.10,97.32,57.22,1.31,6.84,0.00,52.81,235.64,1
+profile_csv,35,rknn_inputs_set,10.06,96.14,56.94,1.25,6.65,0.00,29.64,200.71,0
+profile_csv,36,rknn_inputs_set,6.23,95.28,54.41,1.25,6.66,0.00,43.12,206.98,0
+profile_csv,37,rknn_inputs_set,6.32,85.35,44.37,0.36,1.87,0.00,31.36,169.65,0
+profile_csv,38,rknn_inputs_set,6.18,77.05,50.58,0.88,4.42,0.00,38.07,177.20,0
+profile_csv,39,rknn_inputs_set,9.34,86.35,48.20,0.67,3.35,0.00,36.72,184.66,0
+alarm_event frame=40 state=off detections=0
+profile_csv,40,rknn_inputs_set,19.94,80.53,55.63,1.30,6.64,0.00,49.89,213.95,0
+alarm_event frame=41 state=on detections=1
+profile_csv,41,rknn_inputs_set,9.42,90.22,51.30,1.30,6.71,0.00,45.75,204.74,1
+profile_csv,42,rknn_inputs_set,9.28,84.73,56.67,1.32,6.66,0.00,49.32,208.03,0
+profile_csv,43,rknn_inputs_set,14.37,88.86,50.07,0.88,4.42,0.00,43.93,202.55,0
+profile_csv,44,rknn_inputs_set,6.33,83.11,49.15,0.84,4.44,0.00,41.52,185.41,0
+profile_csv,45,rknn_inputs_set,4.92,78.34,57.97,1.31,6.73,0.00,56.36,205.67,0
+profile_csv,46,rknn_inputs_set,9.23,95.12,50.05,0.84,4.45,0.00,46.79,206.50,0
+profile_csv,47,rknn_inputs_set,9.36,79.93,45.25,0.54,2.70,0.00,35.37,173.16,1
+profile_csv,48,rknn_inputs_set,18.23,70.41,46.89,0.84,4.47,0.00,47.97,188.83,1
+profile_csv,49,rknn_inputs_set,6.44,88.53,48.86,1.31,6.75,0.00,39.21,191.14,1
+profile_csv,50,rknn_inputs_set,13.95,87.69,55.54,1.25,6.80,0.00,47.09,212.37,1
+profile_csv,51,rknn_inputs_set,21.19,85.59,45.72,0.43,2.23,0.00,32.46,187.63,1
+profile_csv,52,rknn_inputs_set,6.29,70.14,52.21,0.89,4.52,0.00,42.96,177.04,1
+profile_csv,53,rknn_inputs_set,4.01,79.10,46.54,0.52,2.72,0.00,43.63,176.54,1
+profile_csv,54,rknn_inputs_set,14.29,81.35,53.92,1.29,6.72,0.00,54.73,212.34,1
+profile_csv,55,rknn_inputs_set,8.86,90.34,49.32,0.89,4.47,0.00,49.77,203.67,1
+profile_csv,56,rknn_inputs_set,9.32,88.03,50.99,0.84,4.51,0.00,41.76,195.49,1
+profile_csv,57,rknn_inputs_set,3.38,83.91,43.74,0.36,1.89,0.00,24.97,158.26,1
+profile_csv,58,rknn_inputs_set,6.40,58.14,48.65,0.64,3.36,0.00,40.36,157.57,0
+profile_csv,59,rknn_inputs_set,6.33,79.37,55.81,1.31,6.71,0.00,51.40,200.95,1
+profile_csv,60,rknn_inputs_set,9.41,89.07,52.86,1.37,6.65,0.00,50.52,209.93,0
+profile_csv,61,rknn_inputs_set,6.38,86.49,48.82,0.84,4.47,0.00,35.15,182.18,1
+profile_csv,62,rknn_inputs_set,14.38,84.34,60.01,1.29,6.68,0.00,54.46,221.19,0
+profile_csv,63,rknn_inputs_set,6.51,103.80,47.13,1.29,6.70,0.00,51.46,216.92,0
+profile_csv,64,rknn_inputs_set,6.33,85.11,42.85,0.42,2.19,0.00,26.19,163.12,0
+profile_csv,65,rknn_inputs_set,9.47,60.96,50.90,1.32,6.69,0.00,44.46,173.83,1
+profile_csv,66,rknn_inputs_set,9.43,82.39,58.08,1.25,6.69,0.00,46.77,204.65,0
+profile_csv,67,rknn_inputs_set,6.32,84.48,48.32,0.88,4.42,0.00,42.68,187.12,0
+profile_csv,68,rknn_inputs_set,9.31,83.05,47.43,0.52,2.69,0.00,31.88,174.90,0
+profile_csv,69,rknn_inputs_set,9.42,70.81,58.63,1.25,6.68,0.00,59.33,206.16,1
+profile_csv,70,rknn_inputs_set,7.30,98.02,46.41,0.52,2.69,0.00,30.25,185.19,0
+profile_csv,71,rknn_inputs_set,19.88,65.89,43.45,0.44,2.17,0.00,27.54,159.39,0
+profile_csv,72,rknn_inputs_set,9.46,59.28,45.17,1.25,6.64,0.00,50.01,171.85,0
+profile_csv,73,rknn_inputs_set,6.43,84.37,49.55,0.84,4.46,0.00,35.88,181.55,0
+profile_csv,74,rknn_inputs_set,4.09,79.46,52.05,0.87,4.42,0.00,48.38,189.29,0
+alarm_event frame=75 state=off detections=0
+profile_csv,75,rknn_inputs_set,8.89,90.39,45.87,0.84,4.44,0.00,44.53,194.99,0
+profile_csv,76,rknn_inputs_set,4.05,83.75,57.02,1.25,6.66,0.00,50.20,202.97,0
+profile_csv,77,rknn_inputs_set,3.38,94.10,58.52,1.25,6.68,0.00,48.23,212.21,0
+profile_csv,78,rknn_inputs_set,18.50,91.16,56.05,1.34,6.68,0.00,46.65,220.42,0
+profile_csv,79,rknn_inputs_set,6.31,89.80,58.15,1.32,6.65,0.00,49.44,211.71,0
+profile_csv,80,rknn_inputs_set,6.43,91.41,47.39,0.87,4.41,0.00,40.18,190.72,0
+profile_csv,81,rknn_inputs_set,6.41,82.95,55.45,1.25,6.68,0.00,43.71,196.48,0
+profile_csv,82,rknn_inputs_set,9.27,84.20,51.81,1.25,6.64,0.00,50.29,203.49,0
+profile_csv,83,rknn_inputs_set,9.24,92.25,48.07,0.87,4.42,0.00,43.49,198.35,0
+profile_csv,84,rknn_inputs_set,9.44,80.32,47.14,0.88,4.43,0.00,42.69,184.91,0
+profile_csv,85,rknn_inputs_set,9.36,85.85,54.78,1.25,6.68,0.00,44.87,202.82,0
+profile_csv,86,rknn_inputs_set,12.87,93.06,49.69,0.88,4.43,0.00,41.07,202.02,0
+profile_csv,87,rknn_inputs_set,19.30,83.27,50.79,0.84,4.46,0.00,40.31,199.00,0
+profile_csv,88,rknn_inputs_set,9.22,81.11,46.64,0.52,2.69,0.00,33.92,174.12,0
+alarm_event frame=89 state=on detections=1
+profile_csv,89,rknn_inputs_set,6.43,70.50,50.11,0.87,4.44,0.00,44.11,176.48,1
+profile_csv,90,rknn_inputs_set,6.38,83.08,47.11,1.25,6.89,0.00,55.19,199.94,1
+profile_csv,91,rknn_inputs_set,9.21,97.56,52.21,1.30,6.65,0.00,54.72,221.68,0
+profile_csv,92,rknn_inputs_set,6.45,94.72,43.96,0.43,2.17,0.00,40.30,188.04,0
+profile_csv,93,rknn_inputs_set,6.44,82.06,49.46,1.25,6.67,0.00,48.24,194.16,0
+profile_csv,94,rknn_inputs_set,4.03,83.18,42.85,0.42,2.19,0.00,26.31,159.00,0
+profile_csv,95,rknn_inputs_set,13.02,65.01,50.07,0.89,4.41,0.00,40.31,173.74,0
+alarm_event frame=96 state=off detections=0
+profile_csv,96,rknn_inputs_set,9.48,83.03,53.61,1.25,6.68,0.00,51.28,205.36,0
+profile_csv,97,rknn_inputs_set,9.32,90.65,56.60,1.25,6.68,0.00,39.25,203.78,0
+profile_csv,98,rknn_inputs_set,6.36,86.62,43.51,1.25,6.74,0.00,40.51,185.03,0
+profile_csv,99,rknn_inputs_set,9.39,81.49,47.48,0.89,4.43,0.00,42.58,186.27,0
+profile_csv,100,rknn_inputs_set,3.40,82.26,50.29,0.84,4.41,0.00,41.88,183.11,0
+profile_csv,101,rknn_inputs_set,6.48,79.55,47.16,0.52,2.70,0.00,30.05,166.48,0
+profile_csv,102,rknn_inputs_set,9.50,70.82,51.71,0.84,4.47,0.00,39.62,176.97,0
+profile_csv,103,rknn_inputs_set,9.27,83.57,54.17,1.25,6.68,0.00,47.96,202.93,0
+profile_csv,104,rknn_inputs_set,9.42,90.66,58.50,1.31,6.64,0.00,47.15,213.71,0
+alarm_event frame=105 state=on detections=1
+profile_csv,105,rknn_inputs_set,6.36,90.35,48.16,1.33,6.70,0.00,48.10,201.02,1
+profile_csv,106,rknn_inputs_set,6.35,85.16,52.72,0.52,2.68,0.00,31.04,178.48,0
+profile_csv,107,rknn_inputs_set,4.10,66.00,43.32,0.42,2.21,0.00,26.39,142.46,1
+profile_csv,108,rknn_inputs_set,6.47,57.21,42.01,0.36,1.86,0.00,22.07,130.01,0
+profile_csv,109,rknn_inputs_set,9.39,55.86,51.54,0.90,4.41,0.00,32.11,154.25,0
+profile_csv,110,rknn_inputs_set,9.45,79.10,47.99,1.25,6.67,0.00,45.70,190.20,0
+profile_csv,111,rknn_inputs_set,9.41,82.87,46.46,0.88,4.44,0.00,40.32,184.40,0
+profile_csv,112,rknn_inputs_set,4.03,80.81,56.83,1.32,6.65,0.00,41.97,191.65,0
+alarm_event frame=113 state=off detections=0
+profile_csv,113,rknn_inputs_set,3.40,80.04,50.84,0.84,4.47,0.00,42.49,182.11,0
+profile_csv,114,rknn_inputs_set,2.97,81.75,46.07,0.52,2.69,0.00,30.21,164.22,0
+profile_csv,115,rknn_inputs_set,6.41,71.51,52.17,0.84,4.46,0.00,38.97,174.39,0
+profile_csv,116,rknn_inputs_set,9.38,83.53,50.46,0.84,4.45,0.00,38.91,187.59,0
+profile_csv,117,rknn_inputs_set,6.15,83.71,49.25,0.88,4.42,0.00,41.15,185.58,0
+profile_csv,118,rknn_inputs_set,9.32,84.68,51.53,1.25,6.69,0.00,40.50,194.01,0
+profile_csv,119,rknn_inputs_set,6.39,81.39,53.62,1.25,6.69,0.00,54.26,203.63,0
+profile_csv,120,rknn_inputs_set,4.09,93.31,44.39,0.36,1.84,0.00,40.44,184.44,0
+profile_csv,121,rknn_inputs_set,6.45,81.66,43.00,0.43,2.17,0.00,20.47,154.20,0
+profile_csv,122,rknn_inputs_set,6.40,70.53,55.85,1.30,6.65,0.00,50.08,190.85,0
+profile_csv,123,rknn_inputs_set,6.48,91.35,43.84,0.36,1.86,0.00,43.36,187.26,0
+profile_csv,124,rknn_inputs_set,9.46,81.06,50.04,0.88,4.42,0.00,40.31,186.20,0
+profile_csv,125,rknn_inputs_set,9.47,77.43,49.72,0.84,4.45,0.00,41.01,182.94,0
+profile_csv,126,rknn_inputs_set,9.17,80.08,50.08,0.84,4.48,0.00,40.45,185.13,0
+profile_csv,127,rknn_inputs_set,3.38,85.34,55.90,1.26,6.65,0.00,43.15,195.71,0
+profile_csv,128,rknn_inputs_set,9.30,86.27,49.15,0.84,4.45,0.00,41.21,191.25,0
+profile_csv,129,rknn_inputs_set,9.37,86.97,45.30,0.42,2.20,0.00,39.34,183.62,0
+profile_csv,130,rknn_inputs_set,6.38,72.33,49.55,0.84,4.43,0.00,36.74,170.31,0
+done. frames=130, frames_with_detections=30, total_detections=30, alarm_events=14, avg_infer_ms=147.35
+results saved to /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035.mp4, /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035_detections.csv, /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035_roi.jsonl and /home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1/fp_full_rga_conf035_alarm.csv

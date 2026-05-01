@@ -505,3 +505,55 @@ Updated conclusion:
 - Enlarging the calibration set to 500 or 1000 images and pinning public UAV target frames does not recover full-INT8 detection on this fixed clip.
 - This makes the failure mode clearer: the model is not merely affected by insufficient calibration samples or an over-high confidence threshold. The sensitive YOLO output head and activation distribution likely require partial high-precision retention.
 - For the thesis and task-book compliance, the strongest defensible statement is: INT8 conversion, calibration-set improvement, multi-threshold board validation, and hybrid quantization mitigation were all completed. Full INT8 gives lower inference latency but loses detection consistency; manual hybrid INT8 gives a practical speed/accuracy compromise, while FP RKNN remains the final stable demonstration path.
+
+### Root-cause check and strict RGA + hybrid INT8 combined validation
+
+A focused debug run compared the output score channel of FP, full INT8, and hybrid INT8. The runtime already uses `rknn_outputs_get(... want_float=1 ...)`, so the failure is not caused by simply forgetting to request float outputs from RKNN Runtime. The score-channel statistics showed:
+
+- FP output: `type=float16`, score channel has non-zero values.
+- Full INT8 output: `type=int8`, score channel max remains `0` on the tested frames.
+- Hybrid INT8 output: `type=float16`, score channel has non-zero values similar to FP.
+
+This supports the root-cause conclusion that full INT8 quantization collapses the sensitive score/output-head path, while manual hybrid quantization keeps that path usable.
+
+To move closer to the task-book requirement, a combined strict pipeline was then validated:
+
+`video capture -> strict RGA color conversion/resize/letterbox -> RKNN NPU inference -> post-processing/render`
+
+Runtime switches:
+
+- `RK_YOLO_PIPELINE=1`
+- `RK_YOLO_PIPELINE_STAGED=1`
+- `RK_YOLO_PREPROCESS=rga_cvt_resize`
+- `RK_YOLO_RGA_LETTERBOX=1`
+- `RK_YOLO_REQUIRE_RGA=1`
+
+Board output directory:
+
+- `/home/ubuntu/eclipse-workspace/eclipse-workspace/rk_yolo_video/artifacts/taskbook_hybrid_int8_full_rga_20260501_fig1`
+
+Local evidence directory:
+
+- `eval_runs/int8_rga/taskbook_hybrid_int8_full_rga_20260501_fig1`
+
+Strict full-RGA + hybrid INT8 comparison at `conf=0.35`:
+
+| Case | Frames | Frames with detections | Total detections | Alarm events | Avg infer ms | Mean RKNN run ms | Mean total work ms |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| FP full-RGA | 130 | 30 | 30 | 14 | 147.35 | 50.516 | 188.788 |
+| Hybrid INT8 full-RGA | 130 | 23 | 23 | 16 | 46.11 | 35.594 | 72.112 |
+
+Important log evidence:
+
+- `preprocess=rga_cvt_resize`
+- `rga_letterbox=on`
+- `rga_required=on`
+- `pipeline=on`
+- `staged_pipeline=on`
+- `RGA letterbox used: OpenCV cvtColor/resize/copyMakeBorder skipped`
+
+Updated task-book-oriented conclusion:
+
+- Full INT8 still cannot replace FP because its score channel collapses to zero on this validation clip.
+- Hybrid INT8 is now validated not only as an isolated INT8 mitigation, but also inside the strict RGA hardware-preprocessing pipeline.
+- This is the closest current implementation to the task-book optimization direction: RGA preprocessing and INT8-style NPU acceleration are both exercised in one reproducible board-side experiment, while the final stable demonstration can still conservatively use FP RKNN when maximum detection consistency is required.

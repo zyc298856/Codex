@@ -1,0 +1,3 @@
+case,frames,frames_with_detections,total_detections,alarm_events,avg_infer_ms,mean_prepare_ms,mean_input_update_ms,mean_rknn_run_ms,mean_decode_ms,mean_render_ms,mean_total_work_ms
+fp_full_rga_conf035,130,30,30,14,147.35,8.300,82.590,50.516,4.952,41.450,188.788
+hybrid_int8_full_rga_conf035,130,23,23,16,46.11,5.527,0.634,35.594,3.676,26.013,72.112
