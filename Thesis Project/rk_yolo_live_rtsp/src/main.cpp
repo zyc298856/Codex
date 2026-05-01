@@ -227,6 +227,25 @@ struct CameraTuneConfig {
   int warmup_grabs = 6;
 };
 
+struct AutoZoomConfig {
+  bool enabled = false;
+  std::string match_name = "HBS Camera";
+  int min_zoom = 0;
+  int max_zoom = 60;
+  int step = 5;
+  int cooldown_frames = 30;
+  int lost_frames_to_zoom_out = 90;
+  float target_min_ratio = 0.06f;
+  float target_max_ratio = 0.22f;
+};
+
+struct AutoZoomState {
+  int current_zoom = 0;
+  std::uint64_t last_adjust_frame = 0;
+  int lost_frames = 0;
+  bool initialized = false;
+};
+
 struct InputSourceConfig {
   bool is_camera = true;
   bool loop_file = false;
@@ -348,6 +367,30 @@ CameraTuneConfig LoadCameraTuneConfig() {
       ParseEnvInt("RK_YOLO_CAMERA_FOCUS", config.focus_absolute, 0, 550);
   config.settle_ms = ParseEnvInt("RK_YOLO_CAMERA_SETTLE_MS", config.settle_ms, 0, 5000);
   config.warmup_grabs = ParseEnvInt("RK_YOLO_CAMERA_WARMUP_GRABS", config.warmup_grabs, 0, 30);
+  return config;
+}
+
+AutoZoomConfig LoadAutoZoomConfig() {
+  AutoZoomConfig config;
+  config.enabled = ParseEnvBool("RK_YOLO_AUTO_ZOOM", false);
+  config.match_name = ParseEnvString("RK_YOLO_AUTO_ZOOM_MATCH", config.match_name);
+  config.min_zoom = ParseEnvInt("RK_YOLO_AUTO_ZOOM_MIN", config.min_zoom, 0, 99);
+  config.max_zoom = ParseEnvInt("RK_YOLO_AUTO_ZOOM_MAX", config.max_zoom, 0, 99);
+  if (config.max_zoom < config.min_zoom) {
+    config.max_zoom = config.min_zoom;
+  }
+  config.step = ParseEnvInt("RK_YOLO_AUTO_ZOOM_STEP", config.step, 1, 30);
+  config.cooldown_frames =
+      ParseEnvInt("RK_YOLO_AUTO_ZOOM_COOLDOWN", config.cooldown_frames, 1, 600);
+  config.lost_frames_to_zoom_out =
+      ParseEnvInt("RK_YOLO_AUTO_ZOOM_LOST_FRAMES", config.lost_frames_to_zoom_out, 1, 1800);
+  config.target_min_ratio =
+      ParseEnvFloat("RK_YOLO_AUTO_ZOOM_MIN_RATIO", config.target_min_ratio, 0.005f, 0.95f);
+  config.target_max_ratio =
+      ParseEnvFloat("RK_YOLO_AUTO_ZOOM_MAX_RATIO", config.target_max_ratio, 0.01f, 0.99f);
+  if (config.target_max_ratio < config.target_min_ratio) {
+    config.target_max_ratio = config.target_min_ratio;
+  }
   return config;
 }
 
@@ -916,6 +959,106 @@ bool ApplyCameraTune(const std::string& device, cv::VideoCapture* cap,
   return true;
 }
 
+bool ApplyZoomAbsolute(const std::string& device, int zoom_absolute) {
+  std::ostringstream command;
+  command << "v4l2-ctl -d " << device << " -c zoom_absolute=" << zoom_absolute
+          << " >/dev/null 2>&1";
+  return std::system(command.str().c_str()) == 0;
+}
+
+float LargestBoxRatio(const std::vector<Detection>& detections, const cv::Size& frame_size) {
+  if (frame_size.width <= 0 || frame_size.height <= 0) {
+    return 0.0f;
+  }
+
+  float largest_ratio = 0.0f;
+  for (const Detection& det : detections) {
+    const float width_ratio = static_cast<float>(det.box.width) / static_cast<float>(frame_size.width);
+    const float height_ratio =
+        static_cast<float>(det.box.height) / static_cast<float>(frame_size.height);
+    largest_ratio = std::max(largest_ratio, std::max(width_ratio, height_ratio));
+  }
+  return largest_ratio;
+}
+
+bool AutoZoomCameraAllowed(const std::string& device, const AutoZoomConfig& config,
+                           std::string* status) {
+  if (!config.enabled) {
+    *status = "auto_zoom=off";
+    return false;
+  }
+
+  const std::string camera_name = ReadCameraName(device);
+  const std::string display_name = camera_name.empty() ? "unknown" : camera_name;
+  if (!config.match_name.empty() && display_name.find(config.match_name) == std::string::npos) {
+    *status =
+        "auto_zoom=skip model=\"" + display_name + "\" expected~=\"" + config.match_name + "\"";
+    return false;
+  }
+
+  std::ostringstream oss;
+  oss << "auto_zoom=on model=\"" << display_name << "\" range=[" << config.min_zoom << ","
+      << config.max_zoom << "] step=" << config.step
+      << " cooldown_frames=" << config.cooldown_frames
+      << " lost_frames=" << config.lost_frames_to_zoom_out
+      << " target_ratio=[" << config.target_min_ratio << "," << config.target_max_ratio << "]";
+  *status = oss.str();
+  return true;
+}
+
+void UpdateAutoZoom(const std::string& device, const AutoZoomConfig& config, AutoZoomState* state,
+                    std::uint64_t frame_index, const cv::Size& frame_size,
+                    const std::vector<Detection>& detections) {
+  if (!config.enabled || state == nullptr || device.empty()) {
+    return;
+  }
+
+  if (!state->initialized) {
+    state->current_zoom = std::clamp(state->current_zoom, config.min_zoom, config.max_zoom);
+    state->initialized = true;
+  }
+
+  const bool in_cooldown =
+      frame_index < state->last_adjust_frame + static_cast<std::uint64_t>(config.cooldown_frames);
+  int desired_zoom = state->current_zoom;
+  std::string reason;
+  float largest_ratio = LargestBoxRatio(detections, frame_size);
+
+  if (detections.empty()) {
+    ++state->lost_frames;
+    if (state->lost_frames >= config.lost_frames_to_zoom_out && !in_cooldown) {
+      desired_zoom = std::max(config.min_zoom, state->current_zoom - config.step);
+      reason = "target_lost";
+      state->lost_frames = 0;
+    }
+  } else {
+    state->lost_frames = 0;
+    if (!in_cooldown && largest_ratio < config.target_min_ratio) {
+      desired_zoom = std::min(config.max_zoom, state->current_zoom + config.step);
+      reason = "target_small";
+    } else if (!in_cooldown && largest_ratio > config.target_max_ratio) {
+      desired_zoom = std::max(config.min_zoom, state->current_zoom - config.step);
+      reason = "target_large";
+    }
+  }
+
+  if (desired_zoom == state->current_zoom || reason.empty()) {
+    return;
+  }
+
+  if (!ApplyZoomAbsolute(device, desired_zoom)) {
+    std::cerr << "auto_zoom failed frame=" << frame_index << " requested_zoom=" << desired_zoom
+              << std::endl;
+    return;
+  }
+
+  state->current_zoom = desired_zoom;
+  state->last_adjust_frame = frame_index;
+  std::cout << "auto_zoom frame=" << frame_index << " zoom=" << state->current_zoom
+            << " reason=" << reason << " box_ratio=" << std::fixed << std::setprecision(3)
+            << largest_ratio << std::endl;
+}
+
 bool TryOpenCameraDevice(const std::string& device, int width, int height, int fps,
                          cv::VideoCapture* cap) {
   cap->release();
@@ -1308,6 +1451,8 @@ void CaptureLoop(cv::VideoCapture* cap, int width, int height, int fps, bool use
 void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_threshold,
                    int detect_every_n, RoiConfig roi_config, TrackMode track_mode,
                    BoxSmootherConfig smoother_config,
+                   const std::string& camera_device, AutoZoomConfig auto_zoom_config,
+                   int initial_zoom,
                    RtspPublisher* publisher,
                    BoundedQueue<FramePacket>* capture_queue,
                    BoundedQueue<FramePacket>* publish_queue, PipelineStats* stats) {
@@ -1318,6 +1463,8 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
   AlarmState alarm_state;
   const AlarmConfig alarm_config = LoadAlarmConfig();
   WriteGpioAlarmState(alarm_config, alarm_state, true);
+  AutoZoomState auto_zoom_state;
+  auto_zoom_state.current_zoom = initial_zoom;
   bool have_last_detections = false;
   cv::Mat previous_gray;
   std::uint64_t inference_runs = 0;
@@ -1428,6 +1575,8 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
                 << " detections=" << displayed_detections.size() << std::endl;
       WriteGpioAlarmState(alarm_config, alarm_state);
     }
+    UpdateAutoZoom(camera_device, auto_zoom_config, &auto_zoom_state, packet.index,
+                   packet.image.size(), displayed_detections);
     packet.render_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
             .count();
@@ -1513,11 +1662,15 @@ void MultiWorkerDispatchLoop(BoundedQueue<FramePacket>* capture_queue,
 }
 
 void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrderState* order_state,
-                           BoundedQueue<FramePacket>* publish_queue, PipelineStats* stats) {
+                           const std::string& camera_device, AutoZoomConfig auto_zoom_config,
+                           int initial_zoom, BoundedQueue<FramePacket>* publish_queue,
+                           PipelineStats* stats) {
   std::map<std::uint64_t, InferResult> pending_results;
   AlarmState alarm_state;
   const AlarmConfig alarm_config = LoadAlarmConfig();
   WriteGpioAlarmState(alarm_config, alarm_state, true);
+  AutoZoomState auto_zoom_state;
+  auto_zoom_state.current_zoom = initial_zoom;
   InferResult result;
   while (true) {
     const bool got_result = result_queue->WaitPop(&result);
@@ -1564,6 +1717,8 @@ void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrd
                   << " detections=" << ready.detections.size() << std::endl;
         WriteGpioAlarmState(alarm_config, alarm_state);
       }
+      UpdateAutoZoom(camera_device, auto_zoom_config, &auto_zoom_state, ready.packet.index,
+                     ready.packet.image.size(), ready.detections);
       ready.packet.render_ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
               .count();
@@ -1720,6 +1875,7 @@ int main(int argc, char** argv) {
   const TrackMode track_mode = LoadTrackMode();
   const BoxSmootherConfig smoother_config = LoadBoxSmootherConfig();
   const CameraTuneConfig camera_tune_config = LoadCameraTuneConfig();
+  AutoZoomConfig auto_zoom_config = LoadAutoZoomConfig();
   const AlarmConfig alarm_config = LoadAlarmConfig();
   const bool use_rga_frame_resize = LoadRgaFrameResizeEnabled();
   const bool use_rga_publish_nv12 = LoadRgaPublishNv12Enabled();
@@ -1738,6 +1894,14 @@ int main(int argc, char** argv) {
     ApplyCameraTune(resolved_source, &cap, camera_tune_config, &camera_tune_status);
   } else {
     camera_tune_status = source_config.loop_file ? "input_loop=on" : "input_loop=off";
+  }
+
+  std::string auto_zoom_status;
+  if (!source_config.is_camera) {
+    auto_zoom_config.enabled = false;
+    auto_zoom_status = "auto_zoom=off source=video_file";
+  } else if (!AutoZoomCameraAllowed(resolved_source, auto_zoom_config, &auto_zoom_status)) {
+    auto_zoom_config.enabled = false;
   }
 
   YoloRknnDetector detector;
@@ -1763,6 +1927,7 @@ int main(int argc, char** argv) {
     std::cout << "source fallback used for requested source " << input_source << std::endl;
   }
   std::cout << camera_tune_status << std::endl;
+  std::cout << auto_zoom_status << std::endl;
   std::cout << "model=" << model_path << std::endl;
   std::cout << "model_classes=" << model_class_count << std::endl;
   std::cout << "label_mode="
@@ -1828,10 +1993,13 @@ int main(int argc, char** argv) {
     dispatch_thread =
         std::thread(MultiWorkerDispatchLoop, &capture_queue, &worker_queues, &order_state, &stats);
     result_thread = std::thread(MultiWorkerResultLoop, result_queue.get(), &order_state,
-                                &publish_queue, &stats);
+                                resolved_source, auto_zoom_config,
+                                camera_tune_config.zoom_absolute, &publish_queue, &stats);
   } else {
     infer_thread = std::thread(InferenceLoop, &detector, score_threshold, nms_threshold,
-                               detect_every_n, roi_config, track_mode, smoother_config, &publisher,
+                               detect_every_n, roi_config, track_mode, smoother_config,
+                               resolved_source, auto_zoom_config, camera_tune_config.zoom_absolute,
+                               &publisher,
                                &capture_queue, &publish_queue, &stats);
   }
 

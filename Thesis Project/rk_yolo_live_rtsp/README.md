@@ -100,6 +100,13 @@ rtsp://192.168.2.156:8554/drone
   - `RK_YOLO_CAMERA_FOCUS=260` overrides the manual focus value
   - `RK_YOLO_CAMERA_SETTLE_MS=350` controls how long to wait after applying UVC controls
   - `RK_YOLO_CAMERA_WARMUP_GRABS=6` controls how many post-tune frames are discarded before live capture begins
+- `RK_YOLO_AUTO_ZOOM=1` enables an optional detection-driven UVC zoom loop. It is off by default.
+  - `RK_YOLO_AUTO_ZOOM_MIN=0` and `RK_YOLO_AUTO_ZOOM_MAX=60` clamp the zoom range
+  - `RK_YOLO_AUTO_ZOOM_STEP=5` controls each zoom adjustment
+  - `RK_YOLO_AUTO_ZOOM_COOLDOWN=30` rate-limits zoom changes by frame count
+  - `RK_YOLO_AUTO_ZOOM_LOST_FRAMES=90` slowly zooms out after sustained target loss
+  - `RK_YOLO_AUTO_ZOOM_MIN_RATIO=0.06` zooms in when the largest displayed box is too small
+  - `RK_YOLO_AUTO_ZOOM_MAX_RATIO=0.22` zooms out when the largest displayed box is too large
 - You can enable experimental multi-context NPU inference with `RK_YOLO_INFER_WORKERS=2`, but it is only activated when `detect_every_n=1`.
 - The multi-context path is aimed at throughput experiments and may increase end-to-end latency if you try to use it as a direct replacement for the current real-time viewing setup.
 - Runtime logs print `stream_fps`, `npu_fps`, `roi_fps`, `work_ms`, and `alarm` so you can compare full-frame inference, ROI inference, tracking cost, and software-alarm state.
