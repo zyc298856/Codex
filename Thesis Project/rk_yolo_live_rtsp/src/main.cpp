@@ -236,6 +236,7 @@ struct InputSourceConfig {
 struct AlarmConfig {
   bool overlay_enabled = true;
   int hold_frames = kDefaultAlarmHoldFrames;
+  std::string gpio_value_path;
 };
 
 struct AlarmState {
@@ -359,6 +360,7 @@ AlarmConfig LoadAlarmConfig() {
   AlarmConfig config;
   config.overlay_enabled = ParseEnvBool("RK_YOLO_ALARM_OVERLAY", true);
   config.hold_frames = ParseEnvInt("RK_YOLO_ALARM_HOLD_FRAMES", kDefaultAlarmHoldFrames, 0, 300);
+  config.gpio_value_path = ParseEnvString("RK_YOLO_GPIO_VALUE_PATH", "");
   return config;
 }
 
@@ -556,6 +558,19 @@ void DrawAlarmOverlay(cv::Mat* frame, const AlarmState& state,
 
   cv::putText(*frame, oss.str(), cv::Point(12, std::min(bar_h - 9, 30)),
               cv::FONT_HERSHEY_SIMPLEX, 0.72, cv::Scalar(255, 255, 255), 2, cv::LINE_AA);
+}
+
+void WriteGpioAlarmState(const AlarmConfig& config, const AlarmState& state, bool force = false) {
+  if (config.gpio_value_path.empty() || (!force && state.active == state.previous_active)) {
+    return;
+  }
+
+  std::ofstream gpio_file(config.gpio_value_path, std::ios::out | std::ios::trunc);
+  if (!gpio_file.is_open()) {
+    std::cerr << "failed to write gpio alarm state: " << config.gpio_value_path << std::endl;
+    return;
+  }
+  gpio_file << (state.active ? "1" : "0") << "\n";
 }
 
 void DrawDetections(cv::Mat* frame, const std::vector<Detection>& detections) {
@@ -1302,6 +1317,7 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
   std::vector<Detection> previous_displayed_detections;
   AlarmState alarm_state;
   const AlarmConfig alarm_config = LoadAlarmConfig();
+  WriteGpioAlarmState(alarm_config, alarm_state, true);
   bool have_last_detections = false;
   cv::Mat previous_gray;
   std::uint64_t inference_runs = 0;
@@ -1410,6 +1426,7 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
       std::cout << "alarm_event frame=" << packet.index
                 << " state=" << (alarm_state.active ? "on" : "off")
                 << " detections=" << displayed_detections.size() << std::endl;
+      WriteGpioAlarmState(alarm_config, alarm_state);
     }
     packet.render_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
@@ -1500,6 +1517,7 @@ void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrd
   std::map<std::uint64_t, InferResult> pending_results;
   AlarmState alarm_state;
   const AlarmConfig alarm_config = LoadAlarmConfig();
+  WriteGpioAlarmState(alarm_config, alarm_state, true);
   InferResult result;
   while (true) {
     const bool got_result = result_queue->WaitPop(&result);
@@ -1544,6 +1562,7 @@ void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrd
         std::cout << "alarm_event frame=" << ready.packet.index
                   << " state=" << (alarm_state.active ? "on" : "off")
                   << " detections=" << ready.detections.size() << std::endl;
+        WriteGpioAlarmState(alarm_config, alarm_state);
       }
       ready.packet.render_ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
@@ -1758,6 +1777,9 @@ int main(int argc, char** argv) {
             << " min_iou=" << smoother_config.min_iou << std::endl;
   std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
             << " hold_frames=" << alarm_config.hold_frames << std::endl;
+  std::cout << "gpio_alarm_path="
+            << (alarm_config.gpio_value_path.empty() ? "<disabled>" : alarm_config.gpio_value_path)
+            << std::endl;
   std::cout << "rga_frame_resize=" << (use_rga_frame_resize ? "on" : "off") << std::endl;
   std::cout << "publish_format=" << (use_rga_publish_nv12 ? "nv12_rga" : "bgr_videoconvert")
             << std::endl;

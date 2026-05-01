@@ -41,6 +41,7 @@ constexpr int kDefaultAlarmHoldFrames = 5;
 struct AlarmConfig {
   bool overlay_enabled = true;
   int hold_frames = kDefaultAlarmHoldFrames;
+  std::string gpio_value_path;
 };
 
 struct AlarmState {
@@ -141,6 +142,10 @@ AlarmConfig LoadAlarmConfig() {
   AlarmConfig config;
   config.overlay_enabled = ParseEnvBool("RK_YOLO_ALARM_OVERLAY", true);
   config.hold_frames = ParseEnvInt("RK_YOLO_ALARM_HOLD_FRAMES", kDefaultAlarmHoldFrames, 0, 300);
+  const char* gpio_value_path = std::getenv("RK_YOLO_GPIO_VALUE_PATH");
+  if (gpio_value_path != nullptr) {
+    config.gpio_value_path = gpio_value_path;
+  }
   return config;
 }
 
@@ -282,6 +287,19 @@ void WriteAlarmEvent(std::ofstream* alarm_file, int frame_index, const AlarmStat
               << std::setprecision(4) << MaxScore(detections) << "\n";
 }
 
+void WriteGpioAlarmState(const AlarmConfig& config, const AlarmState& state, bool force = false) {
+  if (config.gpio_value_path.empty() || (!force && state.active == state.previous_active)) {
+    return;
+  }
+
+  std::ofstream gpio_file(config.gpio_value_path, std::ios::out | std::ios::trunc);
+  if (!gpio_file.is_open()) {
+    std::cerr << "failed to write gpio alarm state: " << config.gpio_value_path << std::endl;
+    return;
+  }
+  gpio_file << (state.active ? "1" : "0") << "\n";
+}
+
 void PrintProfileHeader() {
   std::cout
       << "profile_csv_header,frame,input_mode,prepare_ms,input_set_or_update_ms,rknn_run_ms,"
@@ -377,6 +395,9 @@ int main(int argc, char** argv) {
   std::cout << "alarm csv=" << alarm_csv << std::endl;
   std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
             << " hold_frames=" << alarm_config.hold_frames << std::endl;
+  std::cout << "gpio_alarm_path="
+            << (alarm_config.gpio_value_path.empty() ? "<disabled>" : alarm_config.gpio_value_path)
+            << std::endl;
   const bool pipeline_enabled = EnvFlagEnabled("RK_YOLO_PIPELINE");
   const bool staged_pipeline_enabled = pipeline_enabled && EnvFlagEnabled("RK_YOLO_PIPELINE_STAGED");
   const int pipeline_queue_size = ParseEnvInt("RK_YOLO_PIPELINE_QUEUE", 4, 1, 64);
@@ -396,6 +417,7 @@ int main(int argc, char** argv) {
   double total_ms = 0.0;
   int total_detections = 0;
   AlarmState alarm_state;
+  WriteGpioAlarmState(alarm_config, alarm_state, true);
 
   auto handle_result = [&](ResultPacket result) {
     total_ms += result.infer_ms;
@@ -416,6 +438,7 @@ int main(int argc, char** argv) {
       std::cout << "alarm_event frame=" << result.frame_index
                 << " state=" << (alarm_state.active ? "on" : "off")
                 << " detections=" << result.detections.size() << std::endl;
+      WriteGpioAlarmState(alarm_config, alarm_state);
     }
     WriteAlarmEvent(&alarm_file, result.frame_index, alarm_state, result.detections);
     WriteDetectionRows(&csv_file, result.frame_index, result.detections, model_class_count);

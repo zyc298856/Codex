@@ -107,6 +107,9 @@ Environment variables:
 - `RK_YOLO_ALARM_OVERLAY=1` enables the visual banner and is on by default.
 - `RK_YOLO_ALARM_OVERLAY=0` disables only the banner while keeping detection output unchanged.
 - `RK_YOLO_ALARM_HOLD_FRAMES=5` keeps the alarm active for a few missed frames to avoid flicker.
+- `RK_YOLO_GPIO_VALUE_PATH=/tmp/rk_yolo_gpio_value` writes a GPIO-compatible alarm value on state
+  changes. The file contains `1` for `alarm_on` and `0` for `alarm_off`; if unset, this external
+  alarm interface is disabled.
 
 Alarm CSV format:
 
