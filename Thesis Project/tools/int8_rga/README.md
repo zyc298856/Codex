@@ -133,6 +133,19 @@ scripts/run_taskbook_int8_sweep.sh ...
 
 Current board finding from the 2026-05-01 follow-up: lowering the confidence threshold to `0.05` and rebuilding full INT8 with the 500/1000 pinned calibration lists still produced zero detections on the fixed public UAV clip. Manual hybrid quantization around the sensitive output-head range remains the best INT8 compromise observed so far.
 
+Current board finding from the 2026-05-02 refinement: narrower manual hybrid
+models can preserve detections while leaving nearly all of the model quantized.
+The strongest task-book-oriented result is currently
+`best.end2end_false.op12.rk3588.int8.hybrid_sigmoid500.v220.rknn`, which protects
+only the final confidence/output tail from `/model.23/Sigmoid_output_0_rs` to
+`output0`. On `anti_uav_fig1.mp4`, it produced `23` frames with detections and
+`31` total detections at threshold `0.35`, with mean `rknn_run_ms` around
+`30.637 ms`. The same model also passed strict RGA validation with
+`RK_YOLO_PREPROCESS=rga_cvt_resize`, `RK_YOLO_RGA_LETTERBOX=1`, and
+`RK_YOLO_REQUIRE_RGA=1`. This is currently the closest working compromise to the
+task-book INT8 + RGA optimization goal. It is still a hybrid INT8 model, not a
+fully quantized replacement for the stable FP RKNN model.
+
 The current strongest task-book-oriented validation is the combined strict path:
 
 ```bash

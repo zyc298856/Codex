@@ -53,6 +53,26 @@ Current bootstrap choice:
   - `Anti-UAV`
   - `UETT4K-Anti-UAV`
 
+Public video evaluation layer:
+- raw public evaluation sources now live under `raw_sources/public_videos/`
+- the canonical manifest for fixed-input evaluation is:
+  - `manifests/public_video_eval_manifest.json`
+- use `scripts/import_public_uav_videos.py` to:
+  - download official public anti-UAV archives
+  - extract them into the local raw-source area
+  - reconstruct mp4 videos when the source is released as RGB image sequences
+  - register all generated videos into the shared evaluation manifest
+
+Recommended first evaluation source:
+1. `dut-anti-uav-tracking`
+2. `anti-uav300`
+
+Typical usage from the WSL training environment:
+
+```bash
+python scripts/import_public_uav_videos.py --source dut-anti-uav-tracking --download --max-sequences 3
+```
+
 Next practical step:
 - place the extracted Kaggle bundle under `raw_sources/public/kaggle_drone_object_detection/`
 - run the source import script to normalize it into the standard `images/` and `labels/` layout

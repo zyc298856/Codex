@@ -1,0 +1,39 @@
+{
+  "videos": [
+    {
+      "source_name": "anti-uav-official-gifs",
+      "video_path": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/anti-uav-official-gifs/videos/anti_uav_fig1.mp4",
+      "has_labels": false,
+      "scene_type": "mixed_outdoor",
+      "target_type": "uav",
+      "notes": "Converted from official Anti-UAV demo GIF: anti_uav_fig1.gif",
+      "source_animation": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/anti-uav-official-gifs/extracted/anti_uav_fig1/anti_uav_fig1.gif"
+    },
+    {
+      "source_name": "anti-uav-official-gifs",
+      "video_path": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/anti-uav-official-gifs/videos/anti_uav_fig2.mp4",
+      "has_labels": false,
+      "scene_type": "mixed_outdoor",
+      "target_type": "uav",
+      "notes": "Converted from official Anti-UAV demo GIF: anti_uav_fig2.gif",
+      "source_animation": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/anti-uav-official-gifs/extracted/anti_uav_fig2/anti_uav_fig2.gif"
+    },
+    {
+      "source_name": "dut-anti-uav-tracking",
+      "video_path": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/dut-anti-uav/videos/video01.mp4",
+      "has_labels": true,
+      "scene_type": "urban_long_sequence",
+      "target_type": "uav",
+      "notes": "Converted from DUT-Anti-UAV Tracking V0 frame sequence video01; first-frame GT available in the original zip."
+    },
+    {
+      "source_name": "dut-anti-uav-tracking",
+      "video_path": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/dut-anti-uav/videos/video11.mp4",
+      "has_labels": true,
+      "scene_type": "urban_long_sequence",
+      "target_type": "uav",
+      "notes": "Converted from DUT-Anti-UAV Tracking V0 frame sequence video11; first-frame GT available in the original zip."
+    }
+  ],
+  "updated_source": "dut-anti-uav-tracking"
+}

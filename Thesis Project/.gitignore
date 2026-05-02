@@ -1,6 +1,7 @@
 .metadata/
 .settings/
 .tmp_yolo_export_512/
+.tmp_yolo_export_640/
 
 **/.settings/
 **/Debug/
@@ -15,6 +16,10 @@
 **/*.a
 **/*.so
 **/*.engine
+check*_*.onnx
+best.*.data
+best.*.model
+best.*.quantization.cfg
 
 datasets/drone_single_class/raw_sources/
 datasets/drone_single_class/images/train/
@@ -25,6 +30,13 @@ datasets/drone_single_class/labels/val/
 datasets/drone_single_class/labels/test/
 datasets/drone_single_class/labels/*.cache
 training_runs/
+eval_runs/
+docs/thesis_drafting/qa_*/
+docs/thesis_drafting/*_pages/
+docs/thesis_drafting/full_thesis_latest_merged_before_*.docx
+paper/defense_presentation_v1_pages/
+paper/defense_ppt/
+datasets/drone_single_class/calibration/images/
 training/drone_yolov10/yolo26n.pt
 rk_yolo_live_rtsp/artifacts/
 rk_yolo_video/artifacts/
