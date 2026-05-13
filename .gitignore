@@ -1,0 +1,23 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Office temporary lock files
+~$*.docx
+~$*.pptx
+~$*.xlsx
+
+# Local debug / conversion scratch files
+_tmp_*.py
+check*.onnx
+
+# Local paper rendering, backups, and intermediate exports
+Thesis Project/docs/thesis_drafting/
+Thesis Project/paper/archive/
+Thesis Project/paper/_thesis_for_ppt.txt
+Thesis Project/paper/*backup*/
+Thesis Project/paper/*render*/
+
+# Local calibration frames and generated hard-case datasets
+Thesis Project/datasets/drone_single_class/calibration/
+Thesis Project/datasets/drone_single_class_hard_v1/

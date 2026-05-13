@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 from pathlib import Path
 from typing import Dict, Iterable, List
 
@@ -14,6 +15,15 @@ import cv2
 
 def project_root() -> Path:
     return Path(__file__).resolve().parents[2]
+
+
+def normalize_path(path_text: str) -> Path:
+    """Accept both Windows paths and WSL-style /mnt/c paths in manifests."""
+    if os.name == "nt" and path_text.startswith("/mnt/") and len(path_text) > 6:
+        drive = path_text[5]
+        rest = path_text[7:].replace("/", "\\")
+        return Path(f"{drive.upper()}:\\{rest}")
+    return Path(path_text)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -95,7 +105,7 @@ def main() -> int:
     aggregate: List[Dict[str, object]] = []
 
     for entry in entries:
-        video_path = Path(str(entry["video_path"])).resolve()
+        video_path = normalize_path(str(entry["video_path"])).resolve()
         if not video_path.exists():
             print(f"[skip] missing video: {video_path}")
             continue
