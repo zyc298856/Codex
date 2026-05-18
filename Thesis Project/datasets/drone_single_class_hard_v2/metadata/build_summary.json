@@ -1,0 +1,14 @@
+{
+  "base_dataset": "C:/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class",
+  "output_dataset": "C:/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class_hard_v2",
+  "seed": 20260516,
+  "original_train_images": 2850,
+  "labelled_source_images": 2055,
+  "generated_total": 840,
+  "generated_counts": {
+    "near_zoom": 320,
+    "motion_blur": 260,
+    "edge": 260
+  },
+  "train_total_with_hard_cases": 3690
+}

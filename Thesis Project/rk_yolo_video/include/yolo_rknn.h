@@ -23,6 +23,7 @@ struct InferProfile {
   double total_ms = 0.0;
   std::size_t detections = 0;
   bool zero_copy_input = false;
+  bool dma_rga_input = false;
 };
 
 class YoloRknnDetector {
@@ -44,9 +45,17 @@ class YoloRknnDetector {
   ~YoloRknnDetector();
 
   bool Load(const std::string& model_path);
+  bool SetCoreMask(int core_mask);
   bool PrepareFrame(const cv::Mat& frame, PreparedInput* prepared, InferProfile* profile);
+  bool PrepareDmaFdToBoundInput(int src_fd, int src_width, int src_height, int src_rga_format,
+                                LetterBoxInfo* letterbox, InferProfile* profile);
+  bool PrepareDmaFdToBoundInputStrided(int src_fd, int src_width, int src_height,
+                                       int src_wstride, int src_hstride, int src_rga_format,
+                                       LetterBoxInfo* letterbox, InferProfile* profile);
   std::vector<Detection> InferPrepared(const PreparedInput& prepared, float score_threshold,
                                        float nms_threshold, InferProfile* profile);
+  std::vector<Detection> InferBoundInput(const LetterBoxInfo& letterbox, float score_threshold,
+                                         float nms_threshold, InferProfile* profile);
   std::vector<Detection> Infer(const cv::Mat& frame, float score_threshold, float nms_threshold);
   std::vector<Detection> InferProfiled(const cv::Mat& frame, float score_threshold,
                                        float nms_threshold, InferProfile* profile);

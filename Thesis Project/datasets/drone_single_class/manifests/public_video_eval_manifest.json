@@ -33,7 +33,17 @@
       "scene_type": "urban_long_sequence",
       "target_type": "uav",
       "notes": "Converted from DUT-Anti-UAV Tracking V0 frame sequence video11; first-frame GT available in the original zip."
+    },
+    {
+      "source_name": "pexels-demo",
+      "video_path": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/pexels_demo/pexels_18253602_drone_flying_18s_720p.mp4",
+      "has_labels": false,
+      "scene_type": "outdoor_sky_demo",
+      "target_type": "uav",
+      "notes": "Demo-only public stock video downloaded from Pexels video 18253602. Use for visual demonstration only, not for formal dataset metrics.",
+      "source_url": "https://www.pexels.com/video/drone-flying-18253602/",
+      "original_video": "/mnt/c/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class/raw_sources/public_videos/pexels_demo/pexels_18253602_drone_flying_18s.mp4"
     }
   ],
-  "updated_source": "dut-anti-uav-tracking"
+  "updated_source": "pexels-demo"
 }

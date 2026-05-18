@@ -342,6 +342,27 @@ bool YoloRknnDetector::Load(const std::string& model_path) {
   return true;
 }
 
+bool YoloRknnDetector::SetCoreMask(int core_mask) {
+  if (!loaded_ || ctx_ == 0) {
+    std::cerr << "cannot set RKNN core mask before model is loaded" << std::endl;
+    return false;
+  }
+  if (core_mask < 0) {
+    return true;
+  }
+
+  const int ret =
+      rknn_set_core_mask(ctx_, static_cast<rknn_core_mask>(core_mask));
+  if (ret != RKNN_SUCC) {
+    std::cerr << "rknn_set_core_mask failed: mask=" << core_mask
+              << " ret=" << ret << std::endl;
+    return false;
+  }
+
+  std::cout << "rknn_core_mask=" << core_mask << std::endl;
+  return true;
+}
+
 void YoloRknnDetector::Release() {
   if (ctx_ != 0 && zero_copy_input_mem_ != nullptr) {
     rknn_destroy_mem(ctx_, zero_copy_input_mem_);
@@ -592,6 +613,88 @@ bool YoloRknnDetector::PrepareLetterboxWithRga(const cv::Mat& bgr,
     success_logged = true;
   }
   input_u8->assign(padded.data, padded.data + padded.total() * padded.elemSize());
+  return true;
+#endif
+}
+
+bool YoloRknnDetector::PrepareDmaFdToBoundInput(int src_fd, int src_width, int src_height,
+                                                int src_rga_format, LetterBoxInfo* letterbox,
+                                                InferProfile* profile) {
+  return PrepareDmaFdToBoundInputStrided(src_fd, src_width, src_height, src_width, src_height,
+                                         src_rga_format, letterbox, profile);
+}
+
+bool YoloRknnDetector::PrepareDmaFdToBoundInputStrided(int src_fd, int src_width, int src_height,
+                                                       int src_wstride, int src_hstride,
+                                                       int src_rga_format,
+                                                       LetterBoxInfo* letterbox,
+                                                       InferProfile* profile) {
+  if (!loaded_ || letterbox == nullptr || src_fd < 0 || src_width <= 0 || src_height <= 0 ||
+      src_wstride <= 0 || src_hstride <= 0 || model_width_ <= 0 || model_height_ <= 0 ||
+      model_channels_ != 3) {
+    return false;
+  }
+
+  InferProfile local_profile;
+  InferProfile& p = (profile != nullptr) ? *profile : local_profile;
+  p = InferProfile{};
+  p.zero_copy_input = zero_copy_input_enabled_;
+  p.dma_rga_input = true;
+
+  const auto prepare_start = Clock::now();
+
+  if (!zero_copy_input_enabled_ || zero_copy_input_mem_ == nullptr ||
+      zero_copy_input_mem_->virt_addr == nullptr) {
+    std::cerr << "DMA/RGA input path requires RK_YOLO_ZERO_COPY_INPUT=1 and valid RKNN input mem"
+              << std::endl;
+    return false;
+  }
+
+  letterbox->src_width = src_width;
+  letterbox->src_height = src_height;
+  const float scale = std::min(static_cast<float>(model_width_) / src_width,
+                               static_cast<float>(model_height_) / src_height);
+  const int resized_w = std::max(1, static_cast<int>(std::round(src_width * scale)));
+  const int resized_h = std::max(1, static_cast<int>(std::round(src_height * scale)));
+  const int pad_left = (model_width_ - resized_w) / 2;
+  const int pad_top = (model_height_ - resized_h) / 2;
+  letterbox->scale = scale;
+  letterbox->pad_x = static_cast<float>(pad_left);
+  letterbox->pad_y = static_cast<float>(pad_top);
+
+#ifndef HAVE_RGA
+  (void)src_rga_format;
+  std::cerr << "DMA/RGA input path requires a build with HAVE_RGA" << std::endl;
+  return false;
+#else
+  // Fill the letterbox background in the RKNN input memory, then let RGA write only
+  // the resized image region. This keeps the new path independent from cv::Mat.
+  std::memset(zero_copy_input_mem_->virt_addr, 114, zero_copy_input_mem_->size);
+
+  rga_buffer_t src =
+      wrapbuffer_fd(src_fd, src_width, src_height, src_rga_format, src_wstride, src_hstride);
+  rga_buffer_t dst =
+      wrapbuffer_fd(zero_copy_input_mem_->fd, model_width_, model_height_, RK_FORMAT_RGB_888);
+  im_rect src_rect{0, 0, src_width, src_height};
+  im_rect dst_rect{pad_left, pad_top, resized_w, resized_h};
+
+  IM_STATUS status =
+      improcess(src, dst, {}, src_rect, dst_rect, {}, -1, nullptr, nullptr, IM_SYNC);
+  const auto prepare_end = Clock::now();
+  p.prepare_ms = ElapsedMs(prepare_start, prepare_end);
+
+  if (status != IM_STATUS_SUCCESS) {
+    std::cerr << "DMA fd -> RGA -> RKNN input mem failed: " << imStrError(status)
+              << std::endl;
+    return false;
+  }
+
+  static bool success_logged = false;
+  if (!success_logged) {
+    std::cout << "DMA fd -> RGA -> RKNN input mem path enabled: rknn_inputs_set skipped"
+              << std::endl;
+    success_logged = true;
+  }
   return true;
 #endif
 }
@@ -893,6 +996,80 @@ std::vector<Detection> YoloRknnDetector::InferPrepared(const PreparedInput& prep
   const auto decode_start = Clock::now();
   std::vector<Detection> detections =
       DecodeOutput(output_data, output_count, output_attrs_[0], prepared.letterbox, score_threshold,
+                   nms_threshold);
+  const auto decode_end = Clock::now();
+  p.decode_ms = ElapsedMs(decode_start, decode_end);
+
+  const auto release_start = Clock::now();
+  rknn_outputs_release(ctx_, io_num_.n_output, outputs.data());
+  const auto release_end = Clock::now();
+  p.outputs_release_ms = ElapsedMs(release_start, release_end);
+  p.detections = detections.size();
+  p.total_ms = p.prepare_ms + ElapsedMs(total_start, release_end);
+  return detections;
+}
+
+std::vector<Detection> YoloRknnDetector::InferBoundInput(const LetterBoxInfo& letterbox,
+                                                         float score_threshold,
+                                                         float nms_threshold,
+                                                         InferProfile* profile) {
+  if (!loaded_ || !zero_copy_input_enabled_ || zero_copy_input_mem_ == nullptr) {
+    return {};
+  }
+
+  InferProfile local_profile;
+  InferProfile& p = (profile != nullptr) ? *profile : local_profile;
+  const double prepared_ms = p.prepare_ms;
+  p = InferProfile{};
+  p.prepare_ms = prepared_ms;
+  p.zero_copy_input = true;
+  p.dma_rga_input = true;
+  p.inputs_set_ms = 0.0;
+  const auto total_start = Clock::now();
+
+  int ret = RKNN_SUCC;
+  const auto run_start = Clock::now();
+  ret = rknn_run(ctx_, nullptr);
+  const auto run_end = Clock::now();
+  p.run_ms = ElapsedMs(run_start, run_end);
+  if (ret != RKNN_SUCC) {
+    std::cerr << "rknn_run failed: " << ret << std::endl;
+    return {};
+  }
+
+  std::vector<rknn_output> outputs(io_num_.n_output);
+  for (uint32_t i = 0; i < io_num_.n_output; ++i) {
+    outputs[i].index = i;
+    outputs[i].want_float = 1;
+    outputs[i].is_prealloc = 0;
+  }
+
+  const auto outputs_get_start = Clock::now();
+  ret = rknn_outputs_get(ctx_, io_num_.n_output, outputs.data(), nullptr);
+  const auto outputs_get_end = Clock::now();
+  p.outputs_get_ms = ElapsedMs(outputs_get_start, outputs_get_end);
+  if (ret != RKNN_SUCC) {
+    std::cerr << "rknn_outputs_get failed: " << ret << std::endl;
+    return {};
+  }
+
+  const float* output_data = static_cast<const float*>(outputs[0].buf);
+  const std::size_t output_count = output_attrs_[0].n_elems;
+  const OutputLayout output_layout = ResolveOutputLayout(output_attrs_[0]);
+  if (LayoutDebugEnabled()) {
+    PrintLayoutStats(output_data, output_layout);
+  }
+  if (RawScoreDebugEnabled() && output_data != nullptr) {
+    float max_score = 0.0f;
+    for (std::size_t i = 4; i < output_count; ++i) {
+      max_score = std::max(max_score, output_data[i]);
+    }
+    std::cout << "frame max raw score: " << max_score << std::endl;
+  }
+
+  const auto decode_start = Clock::now();
+  std::vector<Detection> detections =
+      DecodeOutput(output_data, output_count, output_attrs_[0], letterbox, score_threshold,
                    nms_threshold);
   const auto decode_end = Clock::now();
   p.decode_ms = ElapsedMs(decode_start, decode_end);

@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
@@ -217,14 +218,37 @@ struct BoxSmootherConfig {
   float min_iou = 0.10f;
 };
 
+struct TargetLockConfig {
+  bool enabled = false;
+  int hold_frames = 8;
+  float min_score = 0.20f;
+  float min_iou = 0.02f;
+  float max_center_step = 0.12f;
+  float max_size_step = 0.18f;
+  float alpha = 0.35f;
+};
+
+struct TargetLockState {
+  bool active = false;
+  Detection locked;
+  int missed_frames = 0;
+};
+
 struct CameraTuneConfig {
   bool enabled = true;
   std::string match_name = "HBS Camera";
   int zoom_absolute = 20;
-  bool focus_auto = false;
+  bool focus_auto = true;
   int focus_absolute = 260;
   int settle_ms = 350;
   int warmup_grabs = 6;
+  bool focus_startup_lock = true;
+  int focus_lock_ms = 1200;
+  bool refocus_after_zoom = true;
+  int refocus_zoom_delta = 8;
+  int refocus_cooldown_frames = 60;
+  int refocus_settle_ms = 1000;
+  int refocus_fallback_frames = 210;
 };
 
 struct AutoZoomConfig {
@@ -232,18 +256,21 @@ struct AutoZoomConfig {
   std::string match_name = "HBS Camera";
   int min_zoom = 0;
   int max_zoom = 60;
-  int step = 5;
-  int cooldown_frames = 30;
-  int lost_frames_to_zoom_out = 90;
-  float target_min_ratio = 0.06f;
-  float target_max_ratio = 0.22f;
+  int step = 4;
+  int cooldown_frames = 12;
+  int lost_frames_to_zoom_out = 45;
+  float target_min_ratio = 0.055f;
+  float target_max_ratio = 0.24f;
 };
 
 struct AutoZoomState {
   int current_zoom = 0;
   std::uint64_t last_adjust_frame = 0;
+  std::uint64_t last_refocus_frame = 0;
   int lost_frames = 0;
   bool initialized = false;
+  int zoom_at_last_refocus = 0;
+  bool refocus_initialized = false;
 };
 
 struct InputSourceConfig {
@@ -357,6 +384,22 @@ BoxSmootherConfig LoadBoxSmootherConfig() {
   return config;
 }
 
+TargetLockConfig LoadTargetLockConfig() {
+  TargetLockConfig config;
+  config.enabled = ParseEnvBool("RK_YOLO_TARGET_LOCK", false);
+  config.hold_frames = ParseEnvInt("RK_YOLO_LOCK_HOLD_FRAMES", config.hold_frames, 0, 120);
+  config.min_score = ParseEnvFloat("RK_YOLO_LOCK_MIN_SCORE", config.min_score, 0.0f, 1.0f);
+  config.min_iou = ParseEnvFloat("RK_YOLO_LOCK_MIN_IOU", config.min_iou, 0.0f, 0.95f);
+  config.max_center_step =
+      ParseEnvFloat("RK_YOLO_LOCK_MAX_CENTER_STEP", config.max_center_step, 0.01f, 1.0f);
+  config.max_size_step =
+      ParseEnvFloat("RK_YOLO_LOCK_MAX_AREA_STEP", config.max_size_step, 0.01f, 2.0f);
+  config.max_size_step =
+      ParseEnvFloat("RK_YOLO_LOCK_MAX_SIZE_STEP", config.max_size_step, 0.01f, 2.0f);
+  config.alpha = ParseEnvFloat("RK_YOLO_LOCK_ALPHA", config.alpha, 0.05f, 1.0f);
+  return config;
+}
+
 CameraTuneConfig LoadCameraTuneConfig() {
   CameraTuneConfig config;
   config.enabled = ParseEnvBool("RK_YOLO_CAMERA_TUNE", true);
@@ -367,6 +410,20 @@ CameraTuneConfig LoadCameraTuneConfig() {
       ParseEnvInt("RK_YOLO_CAMERA_FOCUS", config.focus_absolute, 0, 550);
   config.settle_ms = ParseEnvInt("RK_YOLO_CAMERA_SETTLE_MS", config.settle_ms, 0, 5000);
   config.warmup_grabs = ParseEnvInt("RK_YOLO_CAMERA_WARMUP_GRABS", config.warmup_grabs, 0, 30);
+  config.focus_startup_lock =
+      ParseEnvBool("RK_YOLO_CAMERA_FOCUS_STARTUP_LOCK", config.focus_startup_lock);
+  config.focus_lock_ms =
+      ParseEnvInt("RK_YOLO_CAMERA_FOCUS_LOCK_MS", config.focus_lock_ms, 0, 5000);
+  config.refocus_after_zoom =
+      ParseEnvBool("RK_YOLO_CAMERA_REFOCUS_AFTER_ZOOM", config.refocus_after_zoom);
+  config.refocus_zoom_delta = ParseEnvInt("RK_YOLO_CAMERA_REFOCUS_ZOOM_DELTA",
+                                          config.refocus_zoom_delta, 1, 99);
+  config.refocus_cooldown_frames = ParseEnvInt("RK_YOLO_CAMERA_REFOCUS_COOLDOWN",
+                                               config.refocus_cooldown_frames, 1, 1800);
+  config.refocus_settle_ms =
+      ParseEnvInt("RK_YOLO_CAMERA_REFOCUS_SETTLE_MS", config.refocus_settle_ms, 0, 5000);
+  config.refocus_fallback_frames = ParseEnvInt("RK_YOLO_CAMERA_REFOCUS_FALLBACK_FRAMES",
+                                               config.refocus_fallback_frames, 0, 3600);
   return config;
 }
 
@@ -796,6 +853,31 @@ std::vector<Detection> OffsetDetections(const std::vector<Detection>& detections
   return shifted;
 }
 
+float RectIou(const cv::Rect2f& a, const cv::Rect2f& b) {
+  const float area_a = a.area();
+  const float area_b = b.area();
+  if (area_a <= 0.0f || area_b <= 0.0f) {
+    return 0.0f;
+  }
+  const float inter_x1 = std::max(a.x, b.x);
+  const float inter_y1 = std::max(a.y, b.y);
+  const float inter_x2 = std::min(a.x + a.width, b.x + b.width);
+  const float inter_y2 = std::min(a.y + a.height, b.y + b.height);
+  const float inter_w = std::max(0.0f, inter_x2 - inter_x1);
+  const float inter_h = std::max(0.0f, inter_y2 - inter_y1);
+  const float inter_area = inter_w * inter_h;
+  return inter_area / (area_a + area_b - inter_area + 1e-6f);
+}
+
+cv::Point2f RectCenter(const cv::Rect& box) {
+  return cv::Point2f(static_cast<float>(box.x) + static_cast<float>(box.width) * 0.5f,
+                     static_cast<float>(box.y) + static_cast<float>(box.height) * 0.5f);
+}
+
+float PointDistance(const cv::Point2f& a, const cv::Point2f& b) {
+  return std::hypot(a.x - b.x, a.y - b.y);
+}
+
 std::vector<Detection> SmoothDetections(const std::vector<Detection>& current_detections,
                                         const std::vector<Detection>& previous_detections,
                                         const cv::Size& frame_size,
@@ -806,21 +888,6 @@ std::vector<Detection> SmoothDetections(const std::vector<Detection>& current_de
 
   std::vector<Detection> smoothed = current_detections;
   std::vector<bool> previous_used(previous_detections.size(), false);
-  auto rect_iou = [](const cv::Rect2f& a, const cv::Rect2f& b) {
-    const float area_a = a.area();
-    const float area_b = b.area();
-    if (area_a <= 0.0f || area_b <= 0.0f) {
-      return 0.0f;
-    }
-    const float inter_x1 = std::max(a.x, b.x);
-    const float inter_y1 = std::max(a.y, b.y);
-    const float inter_x2 = std::min(a.x + a.width, b.x + b.width);
-    const float inter_y2 = std::min(a.y + a.height, b.y + b.height);
-    const float inter_w = std::max(0.0f, inter_x2 - inter_x1);
-    const float inter_h = std::max(0.0f, inter_y2 - inter_y1);
-    const float inter_area = inter_w * inter_h;
-    return inter_area / (area_a + area_b - inter_area + 1e-6f);
-  };
 
   for (Detection& current : smoothed) {
     float best_iou = smoother_config.min_iou;
@@ -832,7 +899,7 @@ std::vector<Detection> SmoothDetections(const std::vector<Detection>& current_de
       }
       const cv::Rect2f current_box(current.box);
       const cv::Rect2f previous_box(previous_detections[i].box);
-      const float iou = rect_iou(current_box, previous_box);
+      const float iou = RectIou(current_box, previous_box);
       if (iou > best_iou) {
         best_iou = iou;
         best_index = static_cast<int>(i);
@@ -858,6 +925,125 @@ std::vector<Detection> SmoothDetections(const std::vector<Detection>& current_de
   }
 
   return smoothed;
+}
+
+Detection LimitLockedDetectionStep(const Detection& previous, const Detection& candidate,
+                                   const cv::Size& frame_size,
+                                   const TargetLockConfig& lock_config) {
+  const float max_dim = static_cast<float>(std::max(frame_size.width, frame_size.height));
+  const float max_center_step = std::max(2.0f, lock_config.max_center_step * max_dim);
+  const cv::Point2f previous_center = RectCenter(previous.box);
+  const cv::Point2f candidate_center = RectCenter(candidate.box);
+  cv::Point2f limited_center = candidate_center;
+  const float center_distance = PointDistance(previous_center, candidate_center);
+  if (center_distance > max_center_step) {
+    const float scale = max_center_step / (center_distance + 1e-6f);
+    limited_center.x = previous_center.x + (candidate_center.x - previous_center.x) * scale;
+    limited_center.y = previous_center.y + (candidate_center.y - previous_center.y) * scale;
+  }
+
+  const float previous_w = std::max(1.0f, static_cast<float>(previous.box.width));
+  const float previous_h = std::max(1.0f, static_cast<float>(previous.box.height));
+  const float candidate_w = std::max(1.0f, static_cast<float>(candidate.box.width));
+  const float candidate_h = std::max(1.0f, static_cast<float>(candidate.box.height));
+  const float max_w_step = std::max(2.0f, previous_w * lock_config.max_size_step);
+  const float max_h_step = std::max(2.0f, previous_h * lock_config.max_size_step);
+  const float limited_w =
+      previous_w + std::clamp(candidate_w - previous_w, -max_w_step, max_w_step);
+  const float limited_h =
+      previous_h + std::clamp(candidate_h - previous_h, -max_h_step, max_h_step);
+
+  const float alpha = lock_config.alpha;
+  const float inv_alpha = 1.0f - alpha;
+  const float blended_cx = previous_center.x * inv_alpha + limited_center.x * alpha;
+  const float blended_cy = previous_center.y * inv_alpha + limited_center.y * alpha;
+  const float blended_w = previous_w * inv_alpha + limited_w * alpha;
+  const float blended_h = previous_h * inv_alpha + limited_h * alpha;
+
+  Detection locked = candidate;
+  locked.box = ClampRect(
+      cv::Rect(static_cast<int>(std::lround(blended_cx - blended_w * 0.5f)),
+               static_cast<int>(std::lround(blended_cy - blended_h * 0.5f)),
+               static_cast<int>(std::lround(blended_w)),
+               static_cast<int>(std::lround(blended_h))),
+      frame_size);
+  locked.score = previous.score * inv_alpha + candidate.score * alpha;
+  return locked;
+}
+
+std::vector<Detection> ApplyTargetLock(const std::vector<Detection>& detections,
+                                       TargetLockState* lock_state,
+                                       const cv::Size& frame_size,
+                                       const TargetLockConfig& lock_config) {
+  if (!lock_config.enabled) {
+    return detections;
+  }
+
+  auto high_enough = [&lock_config](const Detection& detection) {
+    return detection.score >= lock_config.min_score && detection.box.area() > 0;
+  };
+
+  if (!lock_state->active) {
+    int best_index = -1;
+    float best_score = lock_config.min_score;
+    for (std::size_t i = 0; i < detections.size(); ++i) {
+      if (high_enough(detections[i]) && detections[i].score >= best_score) {
+        best_score = detections[i].score;
+        best_index = static_cast<int>(i);
+      }
+    }
+    if (best_index < 0) {
+      return {};
+    }
+    lock_state->active = true;
+    lock_state->missed_frames = 0;
+    lock_state->locked = detections[best_index];
+    lock_state->locked.box = ClampRect(lock_state->locked.box, frame_size);
+    return {lock_state->locked};
+  }
+
+  int best_index = -1;
+  float best_quality = -std::numeric_limits<float>::infinity();
+  const cv::Point2f locked_center = RectCenter(lock_state->locked.box);
+  const float max_dim = static_cast<float>(std::max(frame_size.width, frame_size.height));
+  const float accept_center_step = std::max(4.0f, lock_config.max_center_step * max_dim * 3.0f);
+
+  for (std::size_t i = 0; i < detections.size(); ++i) {
+    const Detection& candidate = detections[i];
+    if (!high_enough(candidate) || candidate.class_id != lock_state->locked.class_id) {
+      continue;
+    }
+
+    const float iou = RectIou(cv::Rect2f(lock_state->locked.box), cv::Rect2f(candidate.box));
+    const float center_distance = PointDistance(locked_center, RectCenter(candidate.box));
+    if (iou < lock_config.min_iou && center_distance > accept_center_step) {
+      continue;
+    }
+
+    const float normalized_distance = center_distance / (accept_center_step + 1e-6f);
+    const float quality = iou * 2.0f + candidate.score - normalized_distance;
+    if (quality > best_quality) {
+      best_quality = quality;
+      best_index = static_cast<int>(i);
+    }
+  }
+
+  if (best_index >= 0) {
+    lock_state->locked =
+        LimitLockedDetectionStep(lock_state->locked, detections[best_index], frame_size, lock_config);
+    lock_state->missed_frames = 0;
+    return {lock_state->locked};
+  }
+
+  ++lock_state->missed_frames;
+  if (lock_state->missed_frames <= lock_config.hold_frames) {
+    lock_state->locked.score *= 0.96f;
+    return {lock_state->locked};
+  }
+
+  lock_state->active = false;
+  lock_state->missed_frames = 0;
+  return {};
 }
 
 std::string ResolveModelPath(int argc, char** argv) {
@@ -908,6 +1094,12 @@ std::string ReadCameraName(const std::string& device) {
   return TrimCopy(line);
 }
 
+bool ApplyFocusAuto(const std::string& device, bool enabled);
+bool ReadFocusAbsolute(const std::string& device, int fallback_focus, int* focus_absolute);
+bool ApplyFocusManual(const std::string& device, int focus_absolute);
+bool TriggerAutofocusAndLock(const std::string& device, const CameraTuneConfig& config,
+                             int settle_ms, const std::string& reason, int* locked_focus);
+
 bool ApplyCameraTune(const std::string& device, cv::VideoCapture* cap,
                      const CameraTuneConfig& config, std::string* status) {
   const std::string camera_name = ReadCameraName(device);
@@ -940,6 +1132,14 @@ bool ApplyCameraTune(const std::string& device, cv::VideoCapture* cap,
   if (config.settle_ms > 0) {
     std::this_thread::sleep_for(std::chrono::milliseconds(config.settle_ms));
   }
+
+  int locked_focus = config.focus_absolute;
+  bool startup_locked = false;
+  if (config.focus_auto && config.focus_startup_lock) {
+    startup_locked =
+        TriggerAutofocusAndLock(device, config, config.focus_lock_ms, "startup", &locked_focus);
+  }
+
   if (cap != nullptr) {
     for (int i = 0; i < config.warmup_grabs; ++i) {
       if (!cap->grab()) {
@@ -951,11 +1151,86 @@ bool ApplyCameraTune(const std::string& device, cv::VideoCapture* cap,
   std::ostringstream applied;
   applied << "camera_tune=applied model=\"" << display_name << "\" zoom=" << config.zoom_absolute
           << " focus_auto=" << (config.focus_auto ? 1 : 0);
-  if (!config.focus_auto) {
-    applied << " focus=" << config.focus_absolute;
+  if (!config.focus_auto || startup_locked) {
+    applied << " focus=" << (startup_locked ? locked_focus : config.focus_absolute);
   }
-  applied << " settle_ms=" << config.settle_ms << " warmup_grabs=" << config.warmup_grabs;
+  applied << " startup_lock=" << (startup_locked ? "on" : "off")
+          << " settle_ms=" << config.settle_ms << " warmup_grabs=" << config.warmup_grabs;
   *status = applied.str();
+  return true;
+}
+
+bool ApplyFocusAuto(const std::string& device, bool enabled) {
+  std::ostringstream command;
+  command << "v4l2-ctl -d " << device << " -c focus_auto=" << (enabled ? 1 : 0)
+          << " >/dev/null 2>&1";
+  return std::system(command.str().c_str()) == 0;
+}
+
+bool ReadFocusAbsolute(const std::string& device, int fallback_focus, int* focus_absolute) {
+  if (focus_absolute == nullptr) {
+    return false;
+  }
+  std::ostringstream command;
+  command << "v4l2-ctl -d " << device << " -C focus_absolute 2>/dev/null";
+  FILE* pipe = popen(command.str().c_str(), "r");
+  if (pipe == nullptr) {
+    *focus_absolute = fallback_focus;
+    return false;
+  }
+  char buffer[256] = {};
+  std::string output;
+  while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+    output += buffer;
+  }
+  const int rc = pclose(pipe);
+  const std::size_t colon = output.find(':');
+  if (rc != 0 || colon == std::string::npos) {
+    *focus_absolute = fallback_focus;
+    return false;
+  }
+  try {
+    *focus_absolute = std::stoi(output.substr(colon + 1));
+    return true;
+  } catch (...) {
+    *focus_absolute = fallback_focus;
+    return false;
+  }
+}
+
+bool ApplyFocusManual(const std::string& device, int focus_absolute) {
+  std::ostringstream command;
+  command << "v4l2-ctl -d " << device << " -c focus_auto=0,focus_absolute=" << focus_absolute
+          << " >/dev/null 2>&1";
+  return std::system(command.str().c_str()) == 0;
+}
+
+bool TriggerAutofocusAndLock(const std::string& device, const CameraTuneConfig& config,
+                             int settle_ms, const std::string& reason, int* locked_focus) {
+  if (!config.focus_auto) {
+    return false;
+  }
+  if (!ApplyFocusAuto(device, true)) {
+    std::cerr << "focus_lock failed to enable AF reason=" << reason << std::endl;
+    return false;
+  }
+  if (settle_ms > 0) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(settle_ms));
+  }
+
+  int focus = config.focus_absolute;
+  const bool read_ok = ReadFocusAbsolute(device, config.focus_absolute, &focus);
+  if (!ApplyFocusManual(device, focus)) {
+    std::cerr << "focus_lock failed to lock focus reason=" << reason
+              << " requested_focus=" << focus << std::endl;
+    return false;
+  }
+  if (locked_focus != nullptr) {
+    *locked_focus = focus;
+  }
+  std::cout << "focus_lock reason=" << reason << " focus=" << focus
+            << " read_current=" << (read_ok ? "yes" : "fallback")
+            << " settle_ms=" << settle_ms << std::endl;
   return true;
 }
 
@@ -1006,7 +1281,8 @@ bool AutoZoomCameraAllowed(const std::string& device, const AutoZoomConfig& conf
   return true;
 }
 
-void UpdateAutoZoom(const std::string& device, const AutoZoomConfig& config, AutoZoomState* state,
+void UpdateAutoZoom(const std::string& device, const AutoZoomConfig& config,
+                    const CameraTuneConfig& camera_config, AutoZoomState* state,
                     std::uint64_t frame_index, const cv::Size& frame_size,
                     const std::vector<Detection>& detections) {
   if (!config.enabled || state == nullptr || device.empty()) {
@@ -1017,6 +1293,28 @@ void UpdateAutoZoom(const std::string& device, const AutoZoomConfig& config, Aut
     state->current_zoom = std::clamp(state->current_zoom, config.min_zoom, config.max_zoom);
     state->initialized = true;
   }
+  if (!state->refocus_initialized) {
+    state->last_refocus_frame = frame_index;
+    state->zoom_at_last_refocus = state->current_zoom;
+    state->refocus_initialized = true;
+  }
+
+  auto maybe_refocus = [&](const std::string& reason, int settle_ms) {
+    if (!camera_config.refocus_after_zoom || !camera_config.focus_auto) {
+      return;
+    }
+    const bool in_refocus_cooldown =
+        frame_index < state->last_refocus_frame +
+                          static_cast<std::uint64_t>(camera_config.refocus_cooldown_frames);
+    if (in_refocus_cooldown) {
+      return;
+    }
+    int locked_focus = camera_config.focus_absolute;
+    if (TriggerAutofocusAndLock(device, camera_config, settle_ms, reason, &locked_focus)) {
+      state->last_refocus_frame = frame_index;
+      state->zoom_at_last_refocus = state->current_zoom;
+    }
+  };
 
   const bool in_cooldown =
       frame_index < state->last_adjust_frame + static_cast<std::uint64_t>(config.cooldown_frames);
@@ -1043,9 +1341,15 @@ void UpdateAutoZoom(const std::string& device, const AutoZoomConfig& config, Aut
   }
 
   if (desired_zoom == state->current_zoom || reason.empty()) {
+    if (camera_config.refocus_fallback_frames > 0 &&
+        frame_index >= state->last_refocus_frame +
+                           static_cast<std::uint64_t>(camera_config.refocus_fallback_frames)) {
+      maybe_refocus("fallback", camera_config.refocus_settle_ms);
+    }
     return;
   }
 
+  const int previous_zoom = state->current_zoom;
   if (!ApplyZoomAbsolute(device, desired_zoom)) {
     std::cerr << "auto_zoom failed frame=" << frame_index << " requested_zoom=" << desired_zoom
               << std::endl;
@@ -1057,6 +1361,12 @@ void UpdateAutoZoom(const std::string& device, const AutoZoomConfig& config, Aut
   std::cout << "auto_zoom frame=" << frame_index << " zoom=" << state->current_zoom
             << " reason=" << reason << " box_ratio=" << std::fixed << std::setprecision(3)
             << largest_ratio << std::endl;
+
+  (void)previous_zoom;
+  if (std::abs(state->current_zoom - state->zoom_at_last_refocus) >=
+      camera_config.refocus_zoom_delta) {
+    maybe_refocus("zoom_change", camera_config.refocus_settle_ms);
+  }
 }
 
 bool TryOpenCameraDevice(const std::string& device, int width, int height, int fps,
@@ -1451,7 +1761,9 @@ void CaptureLoop(cv::VideoCapture* cap, int width, int height, int fps, bool use
 void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_threshold,
                    int detect_every_n, RoiConfig roi_config, TrackMode track_mode,
                    BoxSmootherConfig smoother_config,
+                   TargetLockConfig target_lock_config,
                    const std::string& camera_device, AutoZoomConfig auto_zoom_config,
+                   CameraTuneConfig camera_tune_config,
                    int initial_zoom,
                    RtspPublisher* publisher,
                    BoundedQueue<FramePacket>* capture_queue,
@@ -1460,6 +1772,7 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
   std::vector<Detection> last_detections;
   std::vector<Detection> previous_tracked_detections;
   std::vector<Detection> previous_displayed_detections;
+  TargetLockState target_lock_state;
   AlarmState alarm_state;
   const AlarmConfig alarm_config = LoadAlarmConfig();
   WriteGpioAlarmState(alarm_config, alarm_state, true);
@@ -1475,6 +1788,7 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
       last_detections.clear();
       previous_tracked_detections.clear();
       previous_displayed_detections.clear();
+      target_lock_state = TargetLockState{};
       alarm_state = AlarmState{};
       have_last_detections = false;
       previous_gray.release();
@@ -1562,6 +1876,9 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
     std::vector<Detection> displayed_detections =
         SmoothDetections(detections, previous_displayed_detections, packet.image.size(),
                          smoother_config);
+    displayed_detections =
+        ApplyTargetLock(displayed_detections, &target_lock_state, packet.image.size(),
+                        target_lock_config);
     DrawDetections(&packet.image, displayed_detections);
     UpdateAlarmState(displayed_detections, alarm_config, &alarm_state);
     packet.alarm_active = alarm_state.active;
@@ -1575,8 +1892,8 @@ void InferenceLoop(YoloRknnDetector* detector, float score_threshold, float nms_
                 << " detections=" << displayed_detections.size() << std::endl;
       WriteGpioAlarmState(alarm_config, alarm_state);
     }
-    UpdateAutoZoom(camera_device, auto_zoom_config, &auto_zoom_state, packet.index,
-                   packet.image.size(), displayed_detections);
+    UpdateAutoZoom(camera_device, auto_zoom_config, camera_tune_config, &auto_zoom_state,
+                   packet.index, packet.image.size(), displayed_detections);
     packet.render_ms =
         std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
             .count();
@@ -1663,6 +1980,7 @@ void MultiWorkerDispatchLoop(BoundedQueue<FramePacket>* capture_queue,
 
 void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrderState* order_state,
                            const std::string& camera_device, AutoZoomConfig auto_zoom_config,
+                           CameraTuneConfig camera_tune_config,
                            int initial_zoom, BoundedQueue<FramePacket>* publish_queue,
                            PipelineStats* stats) {
   std::map<std::uint64_t, InferResult> pending_results;
@@ -1717,8 +2035,8 @@ void MultiWorkerResultLoop(BlockingQueue<InferResult>* result_queue, DispatchOrd
                   << " detections=" << ready.detections.size() << std::endl;
         WriteGpioAlarmState(alarm_config, alarm_state);
       }
-      UpdateAutoZoom(camera_device, auto_zoom_config, &auto_zoom_state, ready.packet.index,
-                     ready.packet.image.size(), ready.detections);
+      UpdateAutoZoom(camera_device, auto_zoom_config, camera_tune_config, &auto_zoom_state,
+                     ready.packet.index, ready.packet.image.size(), ready.detections);
       ready.packet.render_ms =
           std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - render_start)
               .count();
@@ -1874,6 +2192,7 @@ int main(int argc, char** argv) {
   const RoiConfig roi_config = LoadRoiConfig();
   const TrackMode track_mode = LoadTrackMode();
   const BoxSmootherConfig smoother_config = LoadBoxSmootherConfig();
+  const TargetLockConfig target_lock_config = LoadTargetLockConfig();
   const CameraTuneConfig camera_tune_config = LoadCameraTuneConfig();
   AutoZoomConfig auto_zoom_config = LoadAutoZoomConfig();
   const AlarmConfig alarm_config = LoadAlarmConfig();
@@ -1940,6 +2259,20 @@ int main(int argc, char** argv) {
   std::cout << "box_smooth=" << (smoother_config.enabled ? "on" : "off")
             << " alpha=" << smoother_config.alpha
             << " min_iou=" << smoother_config.min_iou << std::endl;
+  std::cout << "target_lock=" << (target_lock_config.enabled ? "on" : "off")
+            << " hold_frames=" << target_lock_config.hold_frames
+            << " min_score=" << target_lock_config.min_score
+            << " min_iou=" << target_lock_config.min_iou
+            << " max_center_step=" << target_lock_config.max_center_step
+            << " max_size_step=" << target_lock_config.max_size_step
+            << " alpha=" << target_lock_config.alpha << std::endl;
+  std::cout << "camera_refocus="
+            << ((camera_tune_config.focus_auto && camera_tune_config.refocus_after_zoom) ? "on"
+                                                                                         : "off")
+            << " zoom_delta=" << camera_tune_config.refocus_zoom_delta
+            << " cooldown_frames=" << camera_tune_config.refocus_cooldown_frames
+            << " settle_ms=" << camera_tune_config.refocus_settle_ms
+            << " fallback_frames=" << camera_tune_config.refocus_fallback_frames << std::endl;
   std::cout << "alarm_overlay=" << (alarm_config.overlay_enabled ? "on" : "off")
             << " hold_frames=" << alarm_config.hold_frames << std::endl;
   std::cout << "gpio_alarm_path="
@@ -1994,11 +2327,14 @@ int main(int argc, char** argv) {
         std::thread(MultiWorkerDispatchLoop, &capture_queue, &worker_queues, &order_state, &stats);
     result_thread = std::thread(MultiWorkerResultLoop, result_queue.get(), &order_state,
                                 resolved_source, auto_zoom_config,
+                                camera_tune_config,
                                 camera_tune_config.zoom_absolute, &publish_queue, &stats);
   } else {
     infer_thread = std::thread(InferenceLoop, &detector, score_threshold, nms_threshold,
                                detect_every_n, roi_config, track_mode, smoother_config,
-                               resolved_source, auto_zoom_config, camera_tune_config.zoom_absolute,
+                               target_lock_config,
+                               resolved_source, auto_zoom_config, camera_tune_config,
+                               camera_tune_config.zoom_absolute,
                                &publisher,
                                &capture_queue, &publish_queue, &stats);
   }

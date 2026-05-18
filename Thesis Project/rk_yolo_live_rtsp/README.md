@@ -82,6 +82,12 @@ rtsp://192.168.2.156:8554/drone
 - `RK_YOLO_BOX_SMOOTH=1` enables lightweight temporal box smoothing on the displayed detections and is on by default.
 - `RK_YOLO_BOX_SMOOTH_ALPHA=0.60` controls how strongly the new frame pulls the box toward the latest detection.
 - `RK_YOLO_BOX_SMOOTH_IOU=0.10` is the minimum IoU used to match boxes across adjacent frames for smoothing.
+- `RK_YOLO_TARGET_LOCK=1` enables an experimental single-target lock layer for sensitive classroom demos. It is off by default and helps prevent low-threshold detections from jumping to a nearby false positive.
+  - `RK_YOLO_LOCK_MIN_SCORE=0.24` ignores weak candidates when the lock layer is enabled
+  - `RK_YOLO_LOCK_HOLD_FRAMES=10` keeps the previous target briefly when detection is lost
+  - `RK_YOLO_LOCK_MAX_CENTER_STEP=0.10` limits per-frame target-center movement as a fraction of the larger frame dimension
+  - `RK_YOLO_LOCK_MAX_SIZE_STEP=0.12` limits sudden box-size changes
+  - `RK_YOLO_LOCK_ALPHA=0.35` controls how quickly the locked box follows a new matched detection
 - `RK_YOLO_ALARM_OVERLAY=1` enables a software alarm banner in the live RTSP image and is on by default.
 - `RK_YOLO_ALARM_OVERLAY=0` disables only the banner while keeping detection boxes and RTSP output unchanged.
 - `RK_YOLO_ALARM_HOLD_FRAMES=5` keeps the alarm active for a few missed frames to avoid flicker.

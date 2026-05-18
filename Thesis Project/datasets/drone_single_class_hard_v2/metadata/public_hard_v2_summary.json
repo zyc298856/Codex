@@ -1,0 +1,13 @@
+{
+  "dataset": "C:/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class_hard_v2",
+  "negative_videos_found": 8,
+  "review_videos_found": 5,
+  "hard_negative_images": 144,
+  "hard_negative_images_added_to_train": 144,
+  "manual_review_candidate_images": 50,
+  "train_txt": "C:/Users/Tony/Desktop/eclipse-workspace-codex/eclipse-workspace/Thesis Project/datasets/drone_single_class_hard_v2/train.txt",
+  "policy": {
+    "hard_negatives": "empty labels are added to train.txt",
+    "positive_candidates": "not used for training until manually labelled"
+  }
+}

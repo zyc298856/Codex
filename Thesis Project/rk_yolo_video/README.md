@@ -141,6 +141,304 @@ RK_YOLO_PROFILE=1 RK_YOLO_ZERO_COPY_INPUT=1 ./rk_yolo_video input.mp4 output_zer
 
 If zero-copy setup fails, the tool prints the failure reason and falls back to the normal input path. Keep `RK_YOLO_ZERO_COPY_INPUT=0` for stable demonstrations unless a board-side comparison shows a benefit.
 
+## Experimental DMA/RGA/RKNN Input Path
+
+For low-copy input-path exploration, this folder also provides an isolated demo target:
+
+```text
+rk_yolo_dma_demo
+```
+
+Its intended data path is:
+
+```text
+V4L2 YUYV DMA fd -> RGA resize/color convert/letterbox -> RKNN input memory -> NPU
+```
+
+This target is separate from the stable `rk_yolo_video` and `rk_yolo_live_rtsp` flows. It is useful
+for measuring whether camera DMA buffers can be passed through RGA into bound RKNN input memory
+without using `rknn_inputs_set`.
+
+Board-side reproducibility script:
+
+```bash
+bash scripts/run_dma_rga_rknn_eval.sh
+```
+
+Generate an additional annotated MP4 proof video:
+
+```bash
+WRITE_VIDEO=1 bash scripts/run_dma_rga_rknn_eval.sh
+```
+
+Common overrides:
+
+```bash
+DEVICE=/dev/video48 CONF=0.24 FRAMES=300 WRITE_VIDEO=1 bash scripts/run_dma_rga_rknn_eval.sh
+```
+
+Keep this as an experimental performance path until it is integrated with RTSP publishing and camera
+control. The stable demonstration path remains `rk_yolo_live_rtsp`.
+
+An RTSP-enabled experimental variant is also provided:
+
+```text
+rk_yolo_dma_rtsp_demo
+```
+
+Its intended inference path is:
+
+```text
+V4L2 YUYV DMA fd -> RGA resize/color convert/letterbox -> RKNN input memory -> NPU
+```
+
+and its visualization path is:
+
+```text
+YUYV mmap buffer -> BGR overlay -> GStreamer RTSP appsrc -> mpph264enc
+```
+
+This means the NPU input path avoids the normal `rknn_inputs_set` upload, while RTSP publishing still
+uses a safe BGR appsrc copy for visual validation. It is an aggressive experimental path, not a
+replacement for the stable `rk_yolo_live_rtsp` demonstration.
+
+Build and run on the board:
+
+```bash
+bash scripts/run_dma_rtsp_eval.sh
+```
+
+Then open the stream on the PC:
+
+```text
+rtsp://<board-ip>:8561/yolo_dma
+```
+
+Common overrides:
+
+```bash
+DEVICE=/dev/video48 CONF=0.24 FPS=15 PORT=8561 MOUNT=/yolo_dma bash scripts/run_dma_rtsp_eval.sh
+```
+
+## Route B MPP/DMA/RGA/RKNN Validator
+
+For the more aggressive zero-copy exploration, this folder also includes a headless
+Route B validator:
+
+```text
+rk_yolo_mpp_dma_demo
+```
+
+Its intended inference path is:
+
+```text
+V4L2 H.264/MJPEG packet -> MPP hardware decode -> MppFrame DMA fd
+  -> RGA resize/color convert/letterbox -> RKNN input memory -> NPU
+```
+
+This target is separate from the stable demonstration program. It is meant to verify
+whether decoded hardware buffers can be handed from MPP to RGA and then into bound
+RKNN input memory without the normal `rknn_inputs_set` upload.
+
+Validated board smoke result:
+
+```text
+/dev/video48 H264 640x480@15fps
+summary packets=469 decoded_frames=100 inferred_frames=100
+avg_decode_ms=0.20 avg_prepare_ms=1.04 avg_run_ms=93.65 avg_total_ms=95.95
+```
+
+Build and run on the board:
+
+```bash
+bash scripts/run_mpp_dma_rknn_eval.sh
+```
+
+Common overrides:
+
+```bash
+CODEC=mjpg DEVICE=/dev/video48 CONF=0.24 FRAMES=300 bash scripts/run_mpp_dma_rknn_eval.sh
+```
+
+For public drone videos, use the file validator. The script extracts an Annex-B
+H.264 elementary stream from an MP4 file with `ffmpeg`, then sends that stream to
+MPP:
+
+```bash
+VIDEO=/path/to/public_drone_video.mp4 CONF=0.20 FRAMES=300 \
+  bash scripts/run_mpp_file_rknn_eval.sh
+```
+
+To also generate an annotated proof video, set `OUT_VIDEO`:
+
+```bash
+VIDEO=/path/to/public_drone_video.mp4 CONF=0.20 FRAMES=300 \
+  OUT_VIDEO=eval_runs/route_b_visual/public_drone_boxed.mp4 \
+  bash scripts/run_mpp_file_rknn_eval.sh
+```
+
+Its inference-side route is:
+
+```text
+MP4 video -> H.264 elementary stream -> MPP decode -> MppFrame DMA fd
+  -> RGA letterbox -> RKNN input memory -> NPU
+```
+
+The annotated-video writer uses one extra RGA DMA-to-BGR copy for drawing boxes.
+The inference input still uses the low-copy Route B path and skips
+`rknn_inputs_set`.
+
+## Taskbook RGA / Zero-Copy Verification Pack
+
+Use this one-click verification pack when you need to show that both fixed-video
+input and camera input can exercise the RGA / low-copy RKNN-input path without
+touching the stable thesis demonstration program:
+
+```bash
+bash scripts/run_rga_zero_copy_taskbook_eval.sh
+```
+
+The script writes a timestamped report under:
+
+```text
+eval_runs/rga_zero_copy_taskbook_<timestamp>/
+  environment.txt
+  fixed_video_mpp_rga_rknn.log
+  camera_mpp_rga_rknn_rtsp.log
+  report.md
+```
+
+Fixed-video validation:
+
+```bash
+RUN_FIXED=1 RUN_CAMERA=0 \
+VIDEO=/home/ubuntu/public_videos/quadcopter_20200202_10s.mp4 \
+WRITE_FIXED_VIDEO=1 CONF=0.24 FIXED_FRAMES=300 \
+  bash scripts/run_rga_zero_copy_taskbook_eval.sh
+```
+
+Camera validation with boxed RTSP visualization:
+
+```bash
+RUN_FIXED=0 RUN_CAMERA=1 OUTPUT_MODE=bgr \
+DEVICE=/dev/video48 WIDTH=640 HEIGHT=480 FPS=15 CODEC=h264 \
+CONF=0.24 DETECT_EVERY_N=3 CAMERA_SECONDS=30 \
+PORT=8562 MOUNT=/yolo_mpp \
+  bash scripts/run_rga_zero_copy_taskbook_eval.sh
+```
+
+Camera validation with the cleaner low-copy RTSP performance stream:
+
+```bash
+RUN_FIXED=0 RUN_CAMERA=1 OUTPUT_MODE=dmabuf \
+DEVICE=/dev/video48 WIDTH=640 HEIGHT=480 FPS=15 CODEC=h264 \
+CONF=0.24 DETECT_EVERY_N=3 CAMERA_SECONDS=30 \
+PORT=8563 MOUNT=/yolo_mpp_dma \
+  bash scripts/run_rga_zero_copy_taskbook_eval.sh
+```
+
+Expected evidence in `report.md`:
+
+- `zero_copy_input=on`: RKNN input memory was created and bound.
+- `DMA fd -> RGA -> RKNN input mem path enabled: rknn_inputs_set skipped`:
+  RGA wrote the DMA-backed source frame into the bound RKNN input memory.
+- `summary ... avg_prepare_ms=... avg_run_ms=... avg_total_ms=...`:
+  the run reached the normal timing summary.
+
+The important boundary is unchanged: boxed MP4/RTSP output intentionally keeps a
+visualization-side copy so boxes and labels can be drawn. For the cleanest
+performance-path comparison, use `OUTPUT_MODE=dmabuf`; for demonstration, use
+`OUTPUT_MODE=bgr`.
+
+## Route-B Camera RTSP Launcher
+
+For a quick live-camera check of the Route-B chain, use:
+
+```bash
+bash scripts/start_route_b_camera_rtsp.sh
+```
+
+Default input is `/dev/video48` at `1280x720@20fps` using the camera H.264
+stream. The script keeps the experimental chain enabled:
+
+```text
+V4L2 compressed stream -> MPP decode -> MppFrame DMA fd
+  -> RGA letterbox -> RKNN input memory -> NPU -> boxed RTSP output
+```
+
+Open the printed URL from the PC, for example:
+
+```text
+rtsp://<board-ip>:8564/yolo_routeb_cam
+```
+
+Useful overrides:
+
+```bash
+CONF=0.20 PORT=8568 MOUNT=/routeb_demo RUN_SECONDS=30 \
+  bash scripts/start_route_b_camera_rtsp.sh
+```
+
+If VLC has trouble with the hardware RTSP encoder on a specific computer, run:
+
+```bash
+RK_YOLO_RTSP_ENCODER=x264 bash scripts/start_route_b_camera_rtsp.sh
+```
+
+This launcher is only for the Route-B exploration path and does not modify the
+stable FP RKNN thesis demonstration flow.
+
+## Production-Candidate One-Click Benchmark
+
+For the most complete automated experiment in this project, use:
+
+```bash
+bash scripts/run_mpp_dma_rtsp_production_candidate.sh
+```
+
+This script does not touch the stable `rk_yolo_live_rtsp` demonstration path. It
+creates a timestamped folder under `eval_runs/`, records board/camera/model
+environment information, runs a four-mode RTSP matrix, runs an async DMA-pool
+pressure test, and writes a `report.md` summary.
+
+The evaluated chain is:
+
+```text
+UVC compressed stream -> V4L2 capture -> MPP hardware decode -> MppFrame DMA fd
+  -> RGA resize/color convert/letterbox -> RKNN input memory -> NPU -> RTSP output
+```
+
+Common overrides:
+
+```bash
+MATRIX_SECONDS=18 STRESS_SECONDS=12 BASE_PORT=8600 ASYNC_POOL=3 \
+  DEVICE=/dev/video48 CONF=0.24 FPS=15 CODEC=h264 \
+  bash scripts/run_mpp_dma_rtsp_production_candidate.sh
+```
+
+Generated artifacts:
+
+```text
+eval_runs/production_candidate_<timestamp>/
+  environment.txt
+  matrix/summary.tsv
+  async_pool_stress.log
+  report.md
+```
+
+Interpretation guide:
+
+- `direct-dmabuf`: cleanest low-copy performance candidate, but it outputs an
+  NV12 performance stream without drawn boxes.
+- `direct-bgr` / `async-bgr`: visualization candidates with drawn boxes; they
+  intentionally add a BGR copy for overlay.
+- `async + DMA pool`: latency-control experiment that replaces stale pending
+  frames rather than accumulating delay.
+
+This is the closest industrial-style chain currently implemented in the
+project. It is still an experimental production candidate, not a replacement
+for the stable thesis/demo flow until it passes longer camera validation.
+
 ## Optional RGA Preprocess Experiment
 
 The stable default preprocessing path remains OpenCV. For board-side hardware-preprocess experiments,
@@ -231,4 +529,4 @@ This is the guardrail for future migration work: keep the current `rk_yolo_video
 - The new drone-specific model should start from `score=0.35` and `nms=0.45` during its first board-side validation pass.
 - The ROI JSONL file is meant to reduce the gap between this standalone validator and the legacy encoder's object output path.
 - If the shipped `yolov10n.rknn` produces obviously wrong detections, regenerate it from `../yolov10n.onnx` and retry.
-- This phase uses OpenCV video I/O for simplicity. RGA resize is available as an optional experiment, while MPP/decode-side zero-copy remains future work.
+- This phase uses OpenCV video I/O for simplicity. RGA resize is available as an optional experiment. For MPP/decode-side zero-copy exploration, use the isolated `rk_yolo_mpp_dma_demo` validator above.

@@ -309,7 +309,10 @@ names:
 """
     (output_dataset / "dataset.yaml").write_text(dataset_yaml, encoding="utf-8")
 
-    readme = f"""# drone_single_class_hard_v1
+    dataset_name = output_dataset.name
+    train_run_name = f"{dataset_name}_ft"
+
+    readme = f"""# {dataset_name}
 
 This dataset is generated from `drone_single_class` without modifying the
 original dataset. It is intended for a controlled fine-tuning experiment that
@@ -333,7 +336,7 @@ Training entry example:
 & "{as_posix_path(Path(args.python_hint))}" "{as_posix_path(project_root() / 'training' / 'drone_yolov10' / 'train_drone_yolov10.py')}" `
   --model "{as_posix_path(project_root() / 'training_runs' / 'drone_gpu_50e' / 'weights' / 'best.pt')}" `
   --data "{as_posix_path(output_dataset / 'dataset.yaml')}" `
-  --name drone_hard_v1_ft `
+  --name {train_run_name} `
   --epochs 30 --imgsz 640 --batch 8 --device cpu
 ```
 
